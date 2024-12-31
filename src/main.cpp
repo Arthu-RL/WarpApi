@@ -37,7 +37,8 @@ int main(int argc, char** argv)
             ioc.stop();
         });
 
-        HttpServer server(ioc, tcp::endpoint(net::ip::make_address("127.0.0.1"), 8080));
+        tcp::endpoint addr(net::ip::make_address("127.0.0.1"), 8080);
+        HttpServer server(ioc, addr);
 
         uint tcounter = 0;
         std::vector<std::thread> threads;
@@ -46,7 +47,8 @@ int main(int argc, char** argv)
             tcounter++;
         }
 
-        PLOG_INFO << "Server initialized with " << tcounter << " threads.";
+        PLOG_INFO << "Server listening on " << addr.address().to_string()+':'+std::to_string(addr.port());
+        PLOG_INFO << "Running with " << tcounter << " threads.";
 
         for (auto& t : threads) {
             t.join();
