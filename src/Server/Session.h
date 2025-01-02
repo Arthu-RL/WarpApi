@@ -18,16 +18,16 @@ public:
     Session(tcp::socket socket);
     ~Session();
 
+    void start();
+
 private:
     void read();
 
     void write();
 
-    http::response<http::string_body> handle_request(const http::request<http::string_body>& req);
-
-    tcp::socket socket_;
-    beast::flat_buffer buffer_;
-    http::request<http::string_body> req_;
+    tcp::socket _socket;
+    beast::flat_buffer _buffer;
+    http::request<http::string_body> _req;
 };
 
 #endif // SESSION_H

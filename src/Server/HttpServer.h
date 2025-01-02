@@ -21,7 +21,7 @@ public:
 private:
     void accept();
 
-    tcp::acceptor acceptor_;
+    tcp::acceptor _acceptor;
 };
 
 #endif // HTTPSERVER_H

@@ -5,7 +5,7 @@
 #include "Session.h"
 
 HttpServer::HttpServer(net::io_context& ioc, tcp::endpoint addr)
-    : acceptor_(ioc, addr) {
+    : _acceptor(ioc, addr) {
     accept();
 }
 
@@ -15,9 +15,10 @@ HttpServer::~HttpServer()
 }
 
 void HttpServer::accept() {
-    acceptor_.async_accept([this](boost::system::error_code ec, tcp::socket socket) {
+    _acceptor.async_accept([this](boost::system::error_code ec, tcp::socket socket) {
         if (!ec) {
-            std::make_shared<Session>(std::move(socket));
+            auto session = std::make_shared<Session>(std::move(socket));
+            session->start();
         }
         accept();
     });

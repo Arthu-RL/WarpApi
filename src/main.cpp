@@ -16,10 +16,8 @@
 #include "Server/HttpServer.h"
 
 #ifdef NDEBUG
-const bool enableValidationLayers = false;
 const plog::Severity plogSeverity = plog::info;
 #else
-const bool enableValidationLayers = true;
 const plog::Severity plogSeverity = plog::debug;
 #endif
 
@@ -37,18 +35,17 @@ int main(int argc, char** argv)
             ioc.stop();
         });
 
-        tcp::endpoint addr(net::ip::make_address("127.0.0.1"), 8080);
+        tcp::endpoint addr(net::ip::make_address("0.0.0.0"), 41385);
         HttpServer server(ioc, addr);
 
-        uint tcounter = 0;
+        uint tcount = std::min(std::thread::hardware_concurrency(), 4u);
         std::vector<std::thread> threads;
-        for (std::size_t i = 0; i < 4; ++i) {
+        for (uint i = 0; i < tcount; ++i) {
             threads.emplace_back([&ioc] { ioc.run(); });
-            tcounter++;
         }
 
         PLOG_INFO << "Server listening on " << addr.address().to_string()+':'+std::to_string(addr.port());
-        PLOG_INFO << "Running with " << tcounter << " threads.";
+        PLOG_INFO << "Running with " << tcount << " threads.";
 
         for (auto& t : threads) {
             t.join();
@@ -57,7 +54,6 @@ int main(int argc, char** argv)
     {
         PLOG_ERROR << "Server error: " << e.what();
     }
-
 
     return 0;
 }
