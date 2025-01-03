@@ -46,19 +46,12 @@ int main(int argc, char** argv)
         tcp::endpoint addr(address, port);
         HttpServer server(ioc, addr);
 
-        uint maxThreads = appConfig["max_threads"].get<uint>();
-        uint tcount = std::min(std::thread::hardware_concurrency(), maxThreads);
-        std::vector<std::thread> threads;
-        for (uint i = 0; i < tcount; ++i) {
-            threads.emplace_back([&ioc] { ioc.run(); });
-        }
-
         PLOG_INFO << "Server listening on " << ip+':'+std::to_string(port);
-        PLOG_INFO << "Running with " << tcount << " threads.";
 
-        for (auto& t : threads) {
-            t.join();
-        }
+        uint maxThreads = std::min(std::thread::hardware_concurrency(), appConfig["max_threads"].get<uint>());
+
+        server.run_thread_pool(maxThreads);
+
     } catch (const std::exception& e)
     {
         PLOG_ERROR << "Server error: " << e.what();

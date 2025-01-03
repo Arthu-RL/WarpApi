@@ -25,6 +25,8 @@ private:
 
     void write();
 
+    http::response<http::string_body> build_response();
+
     tcp::socket _socket;
     beast::flat_buffer _buffer;
     http::request<http::string_body> _req;
