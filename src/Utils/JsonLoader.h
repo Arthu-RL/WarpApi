@@ -16,6 +16,8 @@ public:
 
     static nlohmann::json object();
 
+    static nlohmann::json meta_info();
+
     static nlohmann::json loadJsonFromFile(const std::string& filePath);
 
     static nlohmann::json loadJsonFromString(const std::string& jDoc);

@@ -30,6 +30,17 @@ add_executable(${PROJECT_NAME}
     ${SOURCES}
 )
 
+set(APP_CONFIGS "${CMAKE_SOURCE_DIR}/config.json")
+set(APP_CONFIGS_DEST "${CMAKE_BINARY_DIR}")
+
+add_custom_target(copy_app_configs ALL
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${APP_CONFIGS_DEST}"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${APP_CONFIGS}"
+        "${APP_CONFIGS_DEST}/config.json"
+)
+add_dependencies(${PROJECT_NAME} copy_app_configs)
+
 add_definitions(-DCMAKE_SOURCE_DIR=\"${CMAKE_SOURCE_DIR}\")
 
 # Include directories for the main executable

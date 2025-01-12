@@ -28,7 +28,7 @@ int main(int argc, char** argv)
     static plog::ColorConsoleAppender<plog::TxtFormatter> consoleAppender;
     plog::init(plogSeverity, &consoleAppender);
 
-    nlohmann::json appConfig = JsonLoader::loadJsonFromFile("../../config.json");
+    nlohmann::json appConfig = JsonLoader::loadJsonFromFile("./config.json");
 
     try {
         net::io_context ioc;

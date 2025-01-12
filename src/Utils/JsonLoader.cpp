@@ -24,6 +24,11 @@ nlohmann::json JsonLoader::object()
     return nlohmann::json::object();
 }
 
+nlohmann::json JsonLoader::meta_info()
+{
+    return nlohmann::json::meta();
+}
+
 nlohmann::json JsonLoader::loadJsonFromFile(const std::string& filePath)
 {
     nlohmann::json jsonData;

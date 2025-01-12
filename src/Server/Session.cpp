@@ -1,5 +1,7 @@
 #include "Session.h"
 
+#include "Utils/JsonLoader.h"
+
 Session::Session(tcp::socket socket) : _socket(std::move(socket))
 {
     PLOG_DEBUG << "Session Created!";
@@ -28,7 +30,7 @@ void Session::read() {
         }
         else
         {
-            PLOG_ERROR << "Error: " << ec.message();
+            PLOG_WARNING << ec.message();
         }
     });
 }
@@ -50,22 +52,38 @@ void Session::write() {
                 self->_socket.shutdown(tcp::socket::shutdown_send, ec);
         } else
         {
-            PLOG_ERROR << "Error: " << ec.message();
+            PLOG_WARNING << ec.message();
         }
     });
 }
 
 http::response<http::string_body> Session::build_response() {
     http::response<http::string_body> res{http::status::ok, _req.version()};
-    res.set(http::field::content_type, "text/plain");
+    res.set(http::field::content_type, "application/json");
     res.set(http::field::connection, "keep-alive");
-
+    res.set(http::field::cache_control, "no-cache, no-store, must-revalidate");
+    res.set(http::field::strict_transport_security, "max-age=31536000; includeSubDomains");
+    res.set(http::field::server, "MyCustomServer/1.0");
+    res.set(http::field::access_control_allow_origin, "*");
+    res.set("X-Content-Type-Options", "nosniff");
+    res.set("X-Frame-Options", "DENY");
+    res.set("X-XSS-Protection", "1; mode=block");
+    res.set("Referrer-Policy", "no-referrer");
+    res.set("Feature-Policy", "geolocation 'self'; camera 'none'");
 
     if (_req.method() == http::verb::get) {
         if (_req.target() == "/") {
-            res.body() = "Welcome to the home page!";
+            nlohmann::json array = JsonLoader::array();
+            nlohmann::json obj = JsonLoader::object();
+            obj["message"] = "Welcome to home page!";
+            nlohmann::json meta_obj = JsonLoader::meta_info();
+            array.push_back(obj);
+            array.push_back(meta_obj);
+            res.body() = JsonLoader::jsonToIndentedString(array);
         } else if (_req.target() == "/hello") {
-            res.body() = "Hello, World!";
+            nlohmann::json obj = JsonLoader::object();
+            obj["message"] = "Hello, World!";
+            res.body() = JsonLoader::jsonToIndentedString(obj);
         } else {
             res.result(http::status::not_found);
             res.body() = "404 Not Found";
