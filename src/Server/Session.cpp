@@ -1,6 +1,10 @@
 #include "Session.h"
 
-#include "Utils/JsonLoader.h"
+#include <plog/Log.h>
+
+#include "../Endpoint/ResponseManager.h"
+#include "../Endpoint/EndpointManager.h"
+#include "Utils/RouteIdentifier.h"
 
 Session::Session(tcp::socket socket) : _socket(std::move(socket))
 {
@@ -58,42 +62,29 @@ void Session::write() {
 }
 
 http::response<http::string_body> Session::build_response() {
-    http::response<http::string_body> res{http::status::ok, _req.version()};
-    res.set(http::field::content_type, "application/json");
-    res.set(http::field::connection, "keep-alive");
-    res.set(http::field::cache_control, "no-cache, no-store, must-revalidate");
-    res.set(http::field::strict_transport_security, "max-age=31536000; includeSubDomains");
-    res.set(http::field::server, "MyCustomServer/1.0");
-    res.set(http::field::access_control_allow_origin, "*");
-    res.set("X-Content-Type-Options", "nosniff");
-    res.set("X-Frame-Options", "DENY");
-    res.set("X-XSS-Protection", "1; mode=block");
-    res.set("Referrer-Policy", "no-referrer");
-    res.set("Feature-Policy", "geolocation 'self'; camera 'none'");
+    ResponseManager<http::string_body> res(_req.version(), false);
 
-    if (_req.method() == http::verb::get) {
-        if (_req.target() == "/") {
-            nlohmann::json array = JsonLoader::array();
-            nlohmann::json obj = JsonLoader::object();
-            obj["message"] = "Welcome to home page!";
-            nlohmann::json meta_obj = JsonLoader::meta_info();
-            array.push_back(obj);
-            array.push_back(meta_obj);
-            res.body() = JsonLoader::jsonToIndentedString(array);
-        } else if (_req.target() == "/hello") {
-            nlohmann::json obj = JsonLoader::object();
-            obj["message"] = "Hello, World!";
-            res.body() = JsonLoader::jsonToIndentedString(obj);
-        } else {
-            res.result(http::status::not_found);
-            res.body() = "404 Not Found";
+    const std::string endpoint_id = RouteIdentifier::generateIdentifier(_req.target().to_string(), _req.method());
+    auto endpoint = EndpointManager::getEndpoint(endpoint_id);
+
+    if (endpoint == nullptr)
+    {
+        res.setStatus(http::status::not_found);
+        res.setBody("404 Not Found");
+    }
+    else {
+        try {
+            endpoint->exec(res);
+        } catch (const std::exception& e) {
+            res.setStatus(http::status::internal_server_error);
+            res.setBody("500 Internal Server Error: " + std::string(e.what()));
         }
-    } else {
-        res.result(http::status::method_not_allowed);
-        res.body() = "405 Method Not Allowed";
     }
 
-    res.prepare_payload();
-    return res;
+    // res.setStatus(http::status::method_not_allowed);
+    // res.setBody("405 Method Not Allowed");
+
+    res.pPayload();
+    return res.getResponse();
 }
 

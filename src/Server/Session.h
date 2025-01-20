@@ -3,7 +3,6 @@
 
 #pragma once
 
-#include <plog/Log.h>
 #include <boost/beast.hpp>
 #include <boost/asio.hpp>
 #include <boost/asio/signal_set.hpp>

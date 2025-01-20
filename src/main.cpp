@@ -16,6 +16,9 @@
 #include "Server/HttpServer.h"
 #include "Utils/JsonLoader.h"
 
+#include "Endpoint/EndpointManager.h"
+#include "Services/GeneralServices.h"
+
 #ifdef NDEBUG
 const plog::Severity plogSeverity = plog::info;
 #else
@@ -29,6 +32,8 @@ int main(int argc, char** argv)
     plog::init(plogSeverity, &consoleAppender);
 
     nlohmann::json appConfig = JsonLoader::loadJsonFromFile("./config.json");
+
+    if (appConfig.empty()) std::exit(EXIT_FAILURE);
 
     try {
         net::io_context ioc;
@@ -48,6 +53,15 @@ int main(int argc, char** argv)
 
         PLOG_INFO << "Server listening on " << ip+':'+std::to_string(port);
 
+        EndpointManager endpointManager;
+
+        // Endpoints
+        GeneralServices generalServices;
+
+        // logs
+        PLOG_INFO << "Endpoints counter: " << endpointManager.count();
+
+        // Threads for Request handle pool
         uint maxThreads = std::min(std::thread::hardware_concurrency(), appConfig["max_threads"].get<uint>());
 
         server.run_thread_pool(maxThreads);
@@ -55,7 +69,8 @@ int main(int argc, char** argv)
     } catch (const std::exception& e)
     {
         PLOG_ERROR << "Server error: " << e.what();
+        return EXIT_FAILURE;
     }
 
-    return 0;
+    return EXIT_SUCCESS;
 }
