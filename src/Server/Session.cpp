@@ -24,7 +24,7 @@ void Session::read() {
     PLOG_DEBUG << "Session Reading!";
 
     std::shared_ptr<Session> self = shared_from_this();
-    http::async_read(_socket, _buffer, _req, [self](beast::error_code ec, std::size_t) {
+    http::async_read(_socket, _buffer, _req.getRequest(), [self](beast::error_code ec, std::size_t) {
         if (!ec) {
             self->write();
         }
@@ -50,7 +50,7 @@ void Session::write() {
         if (!ec) {
             PLOG_DEBUG << "Response sent: " << bytes_transferred << " bytes";
 
-            if (self->_req.keep_alive())
+            if (self->_req.isKeepAlive())
                 self->read();
             else
                 self->_socket.shutdown(tcp::socket::shutdown_send, ec);
@@ -62,9 +62,9 @@ void Session::write() {
 }
 
 http::response<http::string_body> Session::build_response() {
-    ResponseManager<http::string_body> res(_req.version(), false);
+    ResponseManager<http::string_body> res(_req.getVersion(), false);
 
-    const std::string endpoint_id = RouteIdentifier::generateIdentifier(_req.target().to_string(), _req.method());
+    const std::string endpoint_id = RouteIdentifier::generateIdentifier(_req.requestPath(), _req.requestMethod());
     auto endpoint = EndpointManager::getEndpoint(endpoint_id);
 
     if (endpoint == nullptr)
@@ -74,7 +74,7 @@ http::response<http::string_body> Session::build_response() {
     }
     else {
         try {
-            endpoint->exec(res);
+            endpoint->exec(_req, res);
         } catch (const std::exception& e) {
             res.setStatus(http::status::internal_server_error);
             res.setBody("500 Internal Server Error: " + std::string(e.what()));

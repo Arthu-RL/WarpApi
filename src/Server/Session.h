@@ -5,7 +5,8 @@
 
 #include <boost/beast.hpp>
 #include <boost/asio.hpp>
-#include <boost/asio/signal_set.hpp>
+
+#include "../Endpoint/RequestManager.h"
 
 namespace beast = boost::beast;
 namespace http = beast::http;
@@ -28,7 +29,7 @@ private:
 
     tcp::socket _socket;
     beast::flat_buffer _buffer;
-    http::request<http::string_body> _req;
+    RequestManager<http::string_body> _req;
 };
 
 #endif // SESSION_H

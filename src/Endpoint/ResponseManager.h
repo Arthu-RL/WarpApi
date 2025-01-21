@@ -47,7 +47,7 @@ public:
         return _res.keep_alive();
     }
 
-    const http::response<BodyType>& getResponse() const
+    http::response<BodyType>& getResponse()
     {
         return _res;
     }

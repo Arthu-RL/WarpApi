@@ -6,10 +6,11 @@
 #include <string>
 #include <functional>
 
+#include "RequestManager.h"
 #include "ResponseManager.h"
 #include "Utils/RouteIdentifier.h"
 
-typedef std::function<void(ResponseManager<http::string_body>&)> RequestHandlerCallback;
+typedef std::function<void(RequestManager<http::string_body>&, ResponseManager<http::string_body>&)> RequestHandlerCallback;
 
 /**
  * The Endpoint class represents a single API endpoint.
@@ -44,9 +45,9 @@ public:
         return _route != "";
     }
 
-    void exec(ResponseManager<http::string_body>& responseManager)
+    void exec(RequestManager<http::string_body>& req, ResponseManager<http::string_body>& responseManager)
     {
-        _handlerCallBack(responseManager);
+        _handlerCallBack(req, responseManager);
     }
 
 protected:
