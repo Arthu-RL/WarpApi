@@ -12,10 +12,9 @@ namespace http = beast::http;
 template <typename BodyType = http::string_body>
 class ResponseManager {
 public:
-    explicit ResponseManager(int version, bool keep_alive) :
+    explicit ResponseManager(int version) :
         _res(http::status::ok, version)
     {
-        _res.keep_alive(keep_alive);
         applyDefaultHeaders();
     }
 

@@ -41,7 +41,7 @@ nlohmann::json JsonLoader::loadJsonFromFile(const std::string& filePath)
 
         file >> jsonData;
 
-        PLOG_INFO << "Loaded JSON data in path " << filePath;
+        PLOG_DEBUG << "Loaded JSON data in path " << filePath;
     }
     catch (const nlohmann::json::parse_error& e)
     {
@@ -62,7 +62,7 @@ nlohmann::json JsonLoader::loadJsonFromString(const std::string& jDoc)
     try {
         jsonData = nlohmann::json::parse(jDoc);
 
-        PLOG_INFO << "Loaded JSON data from string!";
+        PLOG_DEBUG << "Loaded JSON data from string!";
     }
     catch (const nlohmann::json::parse_error& e)
     {

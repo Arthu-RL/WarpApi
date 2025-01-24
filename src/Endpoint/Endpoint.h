@@ -18,7 +18,7 @@ typedef std::function<void(RequestManager<http::string_body>&, ResponseManager<h
  */
 class Endpoint {
 public:
-    explicit Endpoint(const std::string& route, http::verb method) :
+    explicit Endpoint(const std::string& route, const http::verb method) :
         _route(route), _method(method)
     {
         // Empty

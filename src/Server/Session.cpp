@@ -62,27 +62,27 @@ void Session::write() {
 }
 
 http::response<http::string_body> Session::build_response() {
-    ResponseManager<http::string_body> res(_req.getVersion(), false);
+    ResponseManager<http::string_body> res(_req.getVersion());
 
+    _req.extractQueryParams();
     const std::string endpoint_id = RouteIdentifier::generateIdentifier(_req.requestPath(), _req.requestMethod());
     auto endpoint = EndpointManager::getEndpoint(endpoint_id);
 
-    if (endpoint == nullptr)
+    if (endpoint != nullptr)
     {
-        res.setStatus(http::status::not_found);
-        res.setBody("404 Not Found");
-    }
-    else {
         try {
             endpoint->exec(_req, res);
         } catch (const std::exception& e) {
             res.setStatus(http::status::internal_server_error);
-            res.setBody("500 Internal Server Error: " + std::string(e.what()));
+            res.setBody("Internal Server error: " + std::string(e.what()));
         }
     }
+    else {
+        res.setStatus(http::status::not_found);
+        res.setBody("Endpoint not found.");
+    }
 
-    // res.setStatus(http::status::method_not_allowed);
-    // res.setBody("405 Method Not Allowed");
+    _req.reset();
 
     res.pPayload();
     return res.getResponse();

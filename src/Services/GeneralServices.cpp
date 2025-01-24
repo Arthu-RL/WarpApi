@@ -11,31 +11,60 @@ GeneralServices::GeneralServices() {
 
 void GeneralServices::registerAllEndpoints()
 {
-    registerEndpoint("/", http::verb::get, [&](RequestManager<http::string_body>& request,
-                                               ResponseManager<http::string_body>& response)
+    registerEndpoint("/", http::verb::get,
+                     [&](RequestManager<http::string_body>& request, ResponseManager<http::string_body>& response)
     {
         // response.setHeader(boost::beast::http::field::connection, "keep-alive");
         nlohmann::json meta_obj = JsonLoader::meta_info();
         response.setBody(JsonLoader::jsonToIndentedString(meta_obj));
     });
 
-    registerEndpoint("/hello", http::verb::get, [&](RequestManager<http::string_body>& request,
-                                                    ResponseManager<http::string_body>& response)
+    registerEndpoint("/test", http::verb::get,
+                     [&](RequestManager<http::string_body>& request, ResponseManager<http::string_body>& response)
     {
-        response.setHeader(http::field::content_type, "plain/text");
-        response.setBody("Hello, World!");
+        const auto& params = request.getQueryParams();
+        const auto& body = request.getRequestBody();
+        auto jObj = JsonLoader::loadJsonFromString(body);
+
+        PLOG_DEBUG << JsonLoader::jsonToCompactString(jObj);
+
+        auto result = JsonLoader::object();
+
+        for (auto it=params.begin(); it != params.end(); ++it)
+        {
+            result[it->first] = it->second;
+        }
+
+        for (auto it=jObj.begin(); it != jObj.end(); ++it)
+        {
+            result[it.key()] = it.value().get<std::string>();
+        }
+
+        response.setBody(JsonLoader::jsonToIndentedString(result));
+
+        // FOR ENDPOINT VALIDATION
+
+        // auto it = jObj.find("test_body");
+        // if (it != jObj.end())
+        // {
+        //     obj[it.key()] = it.value().get<std::string>();
+        // }
+
+        // response.setStatus(http::status::bad_request);
+        // response.setBody("Expected `test_id` param.");
     });
 
-    registerEndpoint("/health", http::verb::get, [&](RequestManager<http::string_body>& request,
-                                                    ResponseManager<http::string_body>& response)
+    registerEndpoint("/health", http::verb::get,
+                     [&](RequestManager<http::string_body>& request, ResponseManager<http::string_body>& response)
     {
+        // response.setHeader(http::field::content_type, "plain/text");
         auto obj = JsonLoader::object();
         obj["status"] = "ok";
         response.setBody(JsonLoader::jsonToIndentedString(obj));
     });
 
-    registerEndpoint("/version", http::verb::get, [&](RequestManager<http::string_body>& request,
-                                                    ResponseManager<http::string_body>& response)
+    registerEndpoint("/version", http::verb::get,
+                     [&](RequestManager<http::string_body>& request, ResponseManager<http::string_body>& response)
     {
         response.setHeader(boost::beast::http::field::connection, "keep-alive");
 
