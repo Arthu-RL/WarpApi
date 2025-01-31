@@ -22,6 +22,7 @@ void GeneralServices::registerAllEndpoints()
     registerEndpoint("/test", http::verb::get,
                      [&](RequestManager<http::string_body>& request, ResponseManager<http::string_body>& response)
     {
+        // response.setHeader(boost::beast::http::field::connection, "keep-alive");
         const auto& params = request.getQueryParams();
         const auto& body = request.getRequestBody();
         auto jObj = JsonLoader::loadJsonFromString(body);

@@ -4,18 +4,13 @@
 // #include <plog/Formatters/MessageOnlyFormatter.h>
 #include <plog/Appenders/ColorConsoleAppender.h>
 
-#include <memory.h>
 #include <thread>
-#include <queue>
-#include <condition_variable>
-// #include <unordered_map>
 
 #include <boost/beast.hpp>
 #include <boost/asio.hpp>
 
 #include "Server/HttpServer.h"
 #include "Utils/JsonLoader.h"
-
 #include "Endpoint/EndpointManager.h"
 #include "Services/GeneralServices.h"
 

@@ -18,7 +18,7 @@ public:
     explicit RequestManager() :
         _req(), _queryParams({})
     {
-        // Empty
+        _req.keep_alive(false);
     }
 
     void setBody(const typename BodyType::value_type& buffer)
@@ -123,6 +123,7 @@ public:
     {
         _req.clear();
         _req.body().clear();
+        _queryParams.clear();
     }
 
 private:

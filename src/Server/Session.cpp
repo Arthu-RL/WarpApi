@@ -64,25 +64,27 @@ void Session::write() {
 http::response<http::string_body> Session::build_response() {
     ResponseManager<http::string_body> res(_req.getVersion());
 
-    _req.extractQueryParams();
-    const std::string endpoint_id = RouteIdentifier::generateIdentifier(_req.requestPath(), _req.requestMethod());
-    auto endpoint = EndpointManager::getEndpoint(endpoint_id);
+    try {
+        _req.extractQueryParams();
+        const std::string endpoint_id = RouteIdentifier::generateIdentifier(_req.requestPath(), _req.requestMethod());
+        auto endpoint = EndpointManager::getEndpoint(endpoint_id);
 
-    if (endpoint != nullptr)
-    {
-        try {
+        if (endpoint != nullptr)
+        {
             endpoint->exec(_req, res);
-        } catch (const std::exception& e) {
-            res.setStatus(http::status::internal_server_error);
-            res.setBody("Internal Server error: " + std::string(e.what()));
+        }
+        else {
+            res.setStatus(http::status::not_found);
+            res.setBody("Endpoint not found.");
         }
     }
-    else {
-        res.setStatus(http::status::not_found);
-        res.setBody("Endpoint not found.");
+    catch (const std::exception& e) {
+        res.setStatus(http::status::internal_server_error);
+        res.setBody("Internal Server error: " + std::string(e.what()));
     }
 
-    _req.reset();
+    if (_req.isKeepAlive())
+        _req.reset();
 
     res.pPayload();
     return res.getResponse();
