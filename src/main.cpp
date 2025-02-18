@@ -43,15 +43,16 @@ int main(int argc, char** argv)
 
         net::ip::address address = net::ip::make_address(ip);
 
-        tcp::endpoint addr(address, port);
-        HttpServer server(ioc, addr);
-
-        PLOG_INFO << "Server listening on " << ip+':'+std::to_string(port);
-
         EndpointManager endpointManager;
 
         // Endpoints
         GeneralServices generalServices;
+
+        // Server
+        tcp::endpoint addr(address, port);
+        HttpServer server(ioc, addr);
+
+        PLOG_INFO << "Server listening on " << ip+':'+std::to_string(port);
 
         // logs
         PLOG_INFO << "Endpoints counter: " << endpointManager.count();
