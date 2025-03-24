@@ -3,18 +3,14 @@
 
 #pragma once
 
-#include <boost/beast.hpp>
-#include <string>
-
-namespace beast = boost::beast;
-namespace http = beast::http;
+#include "WarpDefs.h"
 
 class RouteIdentifier
 {
 public:
     RouteIdentifier();
 
-    static std::string generateIdentifier(const std::string& route, const http::verb method);
+    static std::string generateIdentifier(const std::string& route, const Method method);
 };
 
 

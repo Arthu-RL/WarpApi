@@ -3,33 +3,47 @@
 
 #pragma once
 
-#include <boost/beast.hpp>
-#include <boost/asio.hpp>
+#include "WarpDefs.h"
+#include "Request/HttpRequest.h"
+#include "Utils/RingBuffer.h"
+#include "EventLoop/EventLoop.h"
 
-#include "../Endpoint/RequestManager.h"
-
-namespace beast = boost::beast;
-namespace http = beast::http;
-namespace net = boost::asio;
-using tcp = net::ip::tcp;
-
-class Session : public std::enable_shared_from_this<Session> {
+class WARP_API Session : public std::enable_shared_from_this<Session> {
 public:
-    Session(tcp::socket socket);
+    Session(socket_t socket, EventLoop* eventLoop = nullptr);
     ~Session();
 
     void start();
+    void close();
+    const bool isActive() const noexcept;
+    bool setNonBlocking();
+
+    // Methods needed for EventLoop integration
+    socket_t getSocket() const;
+    void onReadReady();
+    void onWriteReady();
 
 private:
     void read();
-
     void write();
+    bool parseRequest();
+    void handleRequest();
 
-    http::response<http::string_body> build_response();
+    socket_t _socket;
+    HttpRequest _req;
+    bool _keepAlive;
+    std::atomic<bool> _active;
 
-    tcp::socket _socket;
-    beast::flat_buffer _buffer;
-    RequestManager<http::string_body> _req;
+    // Use RingBuffer for efficient I/O
+    RingBuffer _readBuffer;
+    RingBuffer _writeBuffer;
+
+    // Request/response state tracking
+    bool _readingHeaders;
+    bool _writingResponse;
+
+    // Reference to the event loop for async I/O
+    EventLoop* _eventLoop;
 };
 
 #endif // SESSION_H

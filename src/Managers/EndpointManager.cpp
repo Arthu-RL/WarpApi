@@ -1,5 +1,4 @@
 #include "EndpointManager.h"
-#include <plog/Log.h>
 
 std::unordered_map<std::string, std::shared_ptr<Endpoint>> EndpointManager::_endpoints_map;
 std::mutex EndpointManager::_mutex;

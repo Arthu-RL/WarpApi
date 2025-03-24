@@ -5,8 +5,8 @@
 
 #include <string>
 
-#include "../Endpoint/Endpoint.h"
-#include "../Endpoint/EndpointManager.h"
+#include "Endpoint/Endpoint.h"
+#include "Managers/EndpointManager.h"
 
 class BaseService
 {
@@ -21,8 +21,8 @@ public:
     virtual void registerAllEndpoints() = 0;
 
     virtual void registerEndpoint(const std::string& route,
-                                  const http::verb method,
-                                  RequestHandlerCallback reqHandler)
+                                  const Method method,
+                                  RequestHandler reqHandler)
     {
         std::shared_ptr<Endpoint> endpoint = std::make_shared<Endpoint>(route, method);
         endpoint->setHandlerCallback(reqHandler);

@@ -6,7 +6,7 @@
 #include <memory>
 #include <unordered_map>
 
-#include "Endpoint.h"
+#include "Endpoint/Endpoint.h"
 
 class EndpointManager
 {

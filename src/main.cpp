@@ -1,70 +1,84 @@
-#include <plog/Log.h>
-#include <plog/Initializers/ConsoleInitializer.h>
-#include <plog/Formatters/TxtFormatter.h>
-// #include <plog/Formatters/MessageOnlyFormatter.h>
-#include <plog/Appenders/ColorConsoleAppender.h>
-
-#include <thread>
-
-#include <boost/beast.hpp>
-#include <boost/asio.hpp>
-
+#include "WarpDefs.h"
 #include "Server/HttpServer.h"
-#include "Utils/JsonLoader.h"
-#include "Endpoint/EndpointManager.h"
+#include "Managers/EndpointManager.h"
 #include "Services/GeneralServices.h"
+#include "Settings/Settings.h"
+#include <csignal>
 
 #ifdef NDEBUG
-const plog::Severity plogSeverity = plog::info;
+const ink::LogLevel logSeverity = ink::LogLevel::INFO;
 #else
-const plog::Severity plogSeverity = plog::debug;
+const ink::LogLevel logSeverity = ink::LogLevel::TRACE;
 #endif
 
+// Global server pointer for signal handling
+HttpServer* g_server = nullptr;
+
+void signalHandler(int signal) {
+    INK_INFO << "Received signal " << signal << ", shutting down...";
+    if (g_server) {
+        g_server->stop();
+    }
+    exit(signal);
+}
 
 int main(int argc, char** argv)
 {
-    static plog::ColorConsoleAppender<plog::TxtFormatter> consoleAppender;
-    plog::init(plogSeverity, &consoleAppender);
+    // Initialize logger
+    INK_CORE_LOGGER;
+    ink::LogManager::getInstance().setGlobalLevel(logSeverity);
+    INK_INFO << "Starting WarpAPI server...";
 
-    nlohmann::json appConfig = JsonLoader::loadJsonFromFile("./config.json");
+    // Load configuration
+    ink::EnhancedJson appConfig = ink::EnhancedJson::loadFromFile("./config.json");
+    if (appConfig.empty()) {
+        INK_ERROR << "Failed to load config.json";
+        std::exit(EXIT_FAILURE);
+    }
 
-    if (appConfig.empty()) std::exit(EXIT_FAILURE);
+    SettingsData settings = Settings(appConfig).getSettings();
+    INK_ASSERT_MSG(Settings::isValid(), "Settings not initialized!");
+
+    INK_INFO << "WarpAPI settings loaded.";
 
     try {
-        net::io_context ioc;
-
-        net::signal_set signals(ioc, SIGINT, SIGTERM);
-        signals.async_wait([&](boost::system::error_code, int) {
-            ioc.stop();
-        });
-
-        std::string ip = appConfig["ip"].get<std::string>();
-        uint16_t port = appConfig["port"].get<uint16_t>();
-
-        net::ip::address address = net::ip::make_address(ip);
-
+        // Initialize endpoint manager
         EndpointManager endpointManager;
 
-        // Endpoints
+        // Register services/endpoints
         GeneralServices generalServices;
 
-        // Server
-        tcp::endpoint addr(address, port);
-        HttpServer server(ioc, addr);
+        // Create and configure the server
+        HttpServer server(settings.port, settings.max_auxiliar_threads);
+        g_server = &server;
 
-        PLOG_INFO << "Server listening on " << ip+':'+std::to_string(port);
+        // Configure server parameters
+        server.setBacklogSize(settings.backlog_size);
+        server.setConnectionTimeout(settings.connection_timeout_ms);
 
-        // logs
-        PLOG_INFO << "Endpoints counter: " << endpointManager.count();
+        // Set up signal handlers for graceful shutdown
+        std::signal(SIGINT, signalHandler);
+        std::signal(SIGTERM, signalHandler);
 
-        // Threads for Request handle pool
-        uint maxThreads = std::min(std::thread::hardware_concurrency(), appConfig["max_threads"].get<uint>());
+        // Start the server
+        server.start();
 
-        server.run_thread_pool(maxThreads);
+        // Log server status
+        INK_INFO << "Server started successfully on " <<settings.ip << ":" << settings.port;
+        INK_INFO << "Thread pool size: " << settings.max_threads;
+        INK_INFO << "Connection backlog: " << settings.backlog_size;
+        INK_INFO << "Connection timeout: " << settings.connection_timeout_ms << "ms";
+        INK_INFO << "Registered endpoints: " << endpointManager.count();
+        INK_INFO << "Press Ctrl+C to stop the server";
 
-    } catch (const std::exception& e)
+        // Keep main thread alive
+        while (true) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+    }
+    catch (const std::exception& e)
     {
-        PLOG_ERROR << "Server error: " << e.what();
+        INK_ERROR << "Server error: " << e.what();
         return EXIT_FAILURE;
     }
 

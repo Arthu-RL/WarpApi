@@ -3,14 +3,8 @@
 
 #pragma once
 
-#include <string>
-#include <functional>
-
-#include "RequestManager.h"
-#include "ResponseManager.h"
+#include "WarpDefs.h"
 #include "Utils/RouteIdentifier.h"
-
-typedef std::function<void(RequestManager<http::string_body>&, ResponseManager<http::string_body>&)> RequestHandlerCallback;
 
 /**
  * The Endpoint class represents a single API endpoint.
@@ -18,14 +12,14 @@ typedef std::function<void(RequestManager<http::string_body>&, ResponseManager<h
  */
 class Endpoint {
 public:
-    explicit Endpoint(const std::string& route, const http::verb method) :
+    explicit Endpoint(const std::string& route, const Method method) :
         _route(route), _method(method)
     {
         // Empty
     }
     ~Endpoint() = default;
 
-    void setHandlerCallback(RequestHandlerCallback handlerCallback)
+    void setHandlerCallback(RequestHandler handlerCallback)
     {
         _handlerCallBack = handlerCallback;
     }
@@ -45,16 +39,16 @@ public:
         return _route != "";
     }
 
-    void exec(RequestManager<http::string_body>& req, ResponseManager<http::string_body>& responseManager)
+    void exec(HttpRequest& req, HttpResponse& responseManager)
     {
         _handlerCallBack(req, responseManager);
     }
 
 protected:
     std::string _route;
-    http::verb _method;
+    Method _method;
 
-    RequestHandlerCallback _handlerCallBack;;
+    RequestHandler _handlerCallBack;
 };
 
 

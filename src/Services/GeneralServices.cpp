@@ -1,9 +1,7 @@
 #include "GeneralServices.h"
 
-#include <plog/Log.h>
-#include <nlohmann/json.hpp>
-
-#include "Utils/JsonLoader.h"
+#include "Request/HttpRequest.h"
+#include "Response/HttpResponse.h"
 
 GeneralServices::GeneralServices() {
     registerAllEndpoints();
@@ -11,25 +9,25 @@ GeneralServices::GeneralServices() {
 
 void GeneralServices::registerAllEndpoints()
 {
-    registerEndpoint("/", http::verb::get,
-                     [&](RequestManager<http::string_body>& request, ResponseManager<http::string_body>& response)
+    registerEndpoint("/",Method::GET,
+                     [&](const HttpRequest& request, HttpResponse& response)
     {
         // response.setHeader(boost::beast::http::field::connection, "keep-alive");
-        nlohmann::json meta_obj = JsonLoader::meta_info();
-        response.setBody(JsonLoader::jsonToIndentedString(meta_obj));
+        ink::EnhancedJson meta_obj = ink::EnhancedJson::meta();
+        response.setBody(meta_obj.toPrettyString());
     });
 
-    registerEndpoint("/test", http::verb::get,
-                     [&](RequestManager<http::string_body>& request, ResponseManager<http::string_body>& response)
+    registerEndpoint("/test", Method::GET,
+                     [&](const HttpRequest& request, HttpResponse& response)
     {
         // response.setHeader(boost::beast::http::field::connection, "keep-alive");
-        const auto& params = request.getQueryParams();
-        const auto& body = request.getRequestBody();
-        auto jObj = JsonLoader::loadJsonFromString(body);
+        const auto& params = request.queryParams();
+        const auto& body = request.body();
+        auto jObj = ink::EnhancedJsonUtils::loadFromString(body);
 
-        PLOG_DEBUG << JsonLoader::jsonToCompactString(jObj);
+        INK_DEBUG << jObj.toCompactString();
 
-        auto result = JsonLoader::object();
+        auto result = ink::EnhancedJson();
 
         for (auto it=params.begin(); it != params.end(); ++it)
         {
@@ -41,7 +39,7 @@ void GeneralServices::registerAllEndpoints()
             result[it.key()] = it.value().get<std::string>();
         }
 
-        response.setBody(JsonLoader::jsonToIndentedString(result));
+        response.setBody(result.toPrettyString());
 
         // FOR ENDPOINT VALIDATION
 
@@ -55,26 +53,26 @@ void GeneralServices::registerAllEndpoints()
         // response.setBody("Expected `test_id` param.");
     });
 
-    registerEndpoint("/health", http::verb::get,
-                     [&](RequestManager<http::string_body>& request, ResponseManager<http::string_body>& response)
+    registerEndpoint("/health", Method::GET,
+                     [&](const HttpRequest& request, HttpResponse& response)
     {
         // response.setHeader(http::field::content_type, "plain/text");
-        auto obj = JsonLoader::object();
+        auto obj = ink::EnhancedJson();
         obj["status"] = "ok";
-        response.setBody(JsonLoader::jsonToIndentedString(obj));
+        response.setBody(obj.toPrettyString());
     });
 
-    registerEndpoint("/version", http::verb::get,
-                     [&](RequestManager<http::string_body>& request, ResponseManager<http::string_body>& response)
+    registerEndpoint("/version", Method::GET,
+                     [&](const HttpRequest& request, HttpResponse& response)
     {
-        response.setHeader(boost::beast::http::field::connection, "keep-alive");
+        response.addHeader("Connection", "keep-alive");
 
-        auto obj = JsonLoader::object();
+        auto obj = ink::EnhancedJson();
         obj["major"] = 1;
         obj["patch"] = 0;
         obj["minor"] = 0;
         obj["text"] = "1.0.0";
 
-        response.setBody(JsonLoader::jsonToIndentedString(obj));
+        response.setBody(obj.toPrettyString());
     });
 }
