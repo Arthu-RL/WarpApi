@@ -95,10 +95,7 @@ void EventLoop::addSession(std::shared_ptr<Session> session) {
 
     socket_t sockfd = session->getSocket();
 
-    tbb::concurrent_hash_map<socket_t, std::shared_ptr<Session>>::accessor accessor;
-    _sessions.insert(accessor, sockfd);
-    accessor->second = session;
-    accessor.release();
+    _sessions[sockfd] = session;
 
 #ifdef _WIN32
     // Associate socket with completion port
@@ -157,7 +154,7 @@ void EventLoop::removeSession(std::shared_ptr<Session> session) {
 
     socket_t sockfd = session->getSocket();
 
-    _sessions.erase(sockfd);
+    _sessions.unsafe_erase(sockfd);
 
 #ifdef _WIN32
     // For Windows, IOCP operations should be canceled
@@ -299,15 +296,14 @@ void EventLoop::runLinux() {
             socket_t sockfd = events[i].data.fd;
 
             std::shared_ptr<Session> session;
-            tbb::concurrent_hash_map<socket_t, std::shared_ptr<Session>>::accessor accessor;
-            if (_sessions.find(accessor, sockfd)) {
-                session = accessor->second;
+            auto it = _sessions.find(sockfd);
+            if (it != _sessions.end()) {
+                session = it->second;
             }
             else
             {
                 session = nullptr;
             }
-            accessor.release();
 
             if (session)
             {

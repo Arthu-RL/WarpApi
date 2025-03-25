@@ -175,9 +175,7 @@ void HttpServer::acceptLoop() {
             // Create a session with the EventLoop
             auto session = std::make_shared<Session>(clientSocket, _eventLoop.get());
 
-            tbb::concurrent_hash_map<socket_t, std::shared_ptr<Session>>::accessor accessor;
-            _connections.insert(accessor, clientSocket);
-            accessor->second = session;
+            _connections[clientSocket] = session;
 
             // Process the connection in the thread pool
             _threadPool.submit([session]() {
@@ -209,32 +207,13 @@ void HttpServer::cleanupIdleConnections() {
         // Check connections every second
         std::this_thread::sleep_for(std::chrono::seconds(1));
 
-        std::vector<socket_t> keysToCheck;
+        for (auto it = _connections.begin(); it != _connections.end();)
         {
-            using range_type = tbb::concurrent_hash_map<socket_t, std::shared_ptr<Session>>::range_type;
-            range_type range = _connections.range();
-
-            for (auto it = range.begin(); it != range.end(); ++it) {
-                keysToCheck.push_back(it->first);
-            }
-        }
-
-        // Process each key
-        for (socket_t key : keysToCheck) {
-            tbb::concurrent_hash_map<socket_t, std::shared_ptr<Session>>::accessor accessor;
-
-            // Find with accessor - thread safe access
-            if (_connections.find(accessor, key)) {
-                if (accessor->second->isIdle(timeout)) {
-                    auto session = accessor->second;
-                    accessor.release();
-
-                    session->close();
-                    _connections.erase(key);
-                }
-                else {
-                    accessor.release();
-                }
+            if (it->second->isIdle(timeout)) {
+                it->second->close();
+                it = _connections.unsafe_erase(it);
+            } else {
+                ++it;
             }
         }
     }

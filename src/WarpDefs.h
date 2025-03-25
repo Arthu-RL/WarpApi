@@ -27,7 +27,7 @@ typedef int socket_t;
 #endif
 
 #include <ink/ink.hpp>
-#include <tbb/concurrent_hash_map.h>
+#include <tbb/concurrent_unordered_map.h>
 
 #define WARP_API
 
@@ -96,6 +96,6 @@ class WARP_API EventLoop;
 class WARP_API HttpServer;
 
 typedef std::function<void(const HttpRequest&, HttpResponse&)> RequestHandler;
-typedef tbb::concurrent_hash_map<socket_t, std::shared_ptr<Session>> SessionTable;
+typedef tbb::concurrent_unordered_map<socket_t, std::shared_ptr<Session>> SessionTable;
 
 #endif // WARPDEFS_H
