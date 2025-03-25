@@ -8,7 +8,6 @@
 #include <thread>
 #include <vector>
 #include <atomic>
-#include <mutex>
 
 class WARP_API EventLoop {
 public:
@@ -55,7 +54,6 @@ private:
 
     // Session tracking with thread safety
     SessionTable _sessions;
-    std::mutex _sessionsMutex;
 
     std::vector<std::thread> _threads;
     std::atomic<bool> _running;
