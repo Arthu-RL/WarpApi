@@ -79,8 +79,8 @@ bool Settings::loadSettings(const ink::EnhancedJson& configs, SettingsData& data
                                     std::thread::hardware_concurrency());
         data.max_auxiliar_threads = std::min(configs.get<uint>("max_event_loop_threads", 1),
                                                data.max_threads);
-        data.backlog_size = configs.get<int>("backlog_size", SOMAXCONN);
-        data.connection_timeout_ms = configs.get<int>("connection_timeout_ms", 60000);
+        data.backlog_size = configs.get<size_t>("backlog_size", SOMAXCONN);
+        data.connection_timeout_ms = configs.get<size_t>("connection_timeout_ms", 60000);
 
         return true;
     }

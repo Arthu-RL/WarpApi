@@ -10,8 +10,8 @@ struct WARP_API SettingsData {
     std::string ip;
     uint max_threads;
     uint max_auxiliar_threads;
-    uint backlog_size;
-    uint connection_timeout_ms;
+    size_t backlog_size;
+    size_t connection_timeout_ms;
 
     // Add validation function
     bool isValid() const;

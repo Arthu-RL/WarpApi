@@ -16,6 +16,7 @@ list(APPEND CMAKE_PREFIX_PATH "$ENV{LIBRARY_PATH}")
 find_package(Threads REQUIRED)
 find_package(Boost REQUIRED)
 find_library(INK_LIB ink HINTS ${ALL_LIBRARY_PATH})
+find_library(TBB_LIB tbb HINTS ${ALL_LIBRARY_PATH})
 
 # Collect source files
 file(GLOB_RECURSE SOURCES
@@ -51,6 +52,7 @@ target_include_directories(${PROJECT_NAME} PUBLIC
 target_link_libraries(${PROJECT_NAME} PUBLIC
     Threads::Threads
     ${INK_LIB}
+    ${TBB_LIB}
     dl
 )
 

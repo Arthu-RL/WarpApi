@@ -22,8 +22,36 @@ public:
     RingBuffer(const RingBuffer&) = delete;
     RingBuffer& operator=(const RingBuffer&) = delete;
 
+    // Read data from the buffer
+    size_t read(char* dest, size_t maxLen)
+    {
+        if (maxLen == 0 || _size == 0) return 0;
+
+        size_t bytesToRead = std::min(maxLen, _size);
+
+        // Handle wrap-around case
+        if (_readPos + bytesToRead <= _capacity) {
+            // Simple case: no wrap-around
+            memcpy(dest, _buffer + _readPos, bytesToRead);
+            _readPos = (_readPos + bytesToRead) % _capacity;
+        } else {
+            // Complex case: need to wrap around
+            size_t firstChunk = _capacity - _readPos;
+            memcpy(dest, _buffer + _readPos, firstChunk);
+
+            size_t secondChunk = bytesToRead - firstChunk;
+            memcpy(dest + firstChunk, _buffer, secondChunk);
+
+            _readPos = secondChunk;
+        }
+
+        _size -= bytesToRead;
+        return bytesToRead;
+    }
+
     // Write data to the buffer
-    size_t write(const char* data, size_t len) {
+    size_t write(const char* data, size_t len)
+    {
         if (len == 0 || _size == _capacity) return 0;
 
         size_t availableSpace = _capacity - _size;
@@ -49,88 +77,57 @@ public:
         return bytesToWrite;
     }
 
-    // Read data from the buffer
-    size_t read(char* dest, size_t maxLen) {
-        if (maxLen == 0 || _size == 0) return 0;
-
-        size_t bytesToRead = std::min(maxLen, _size);
-
-        // Handle wrap-around case
-        if (_readPos + bytesToRead <= _capacity) {
-            // Simple case: no wrap-around
-            memcpy(dest, _buffer + _readPos, bytesToRead);
-            _readPos = (_readPos + bytesToRead) % _capacity;
-        } else {
-            // Complex case: need to wrap around
-            size_t firstChunk = _capacity - _readPos;
-            memcpy(dest, _buffer + _readPos, firstChunk);
-
-            size_t secondChunk = bytesToRead - firstChunk;
-            memcpy(dest + firstChunk, _buffer, secondChunk);
-
-            _readPos = secondChunk;
-        }
-
-        _size -= bytesToRead;
-        return bytesToRead;
-    }
-
     // Get a contiguous read buffer (for zero-copy operations)
-    const char* getReadBuffer(size_t& availableData) const {
+    const char* getReadBuffer(size_t& availableData) const
+    {
         if (_size == 0) {
             availableData = 0;
             return nullptr;
         }
 
-        if (_readPos < _writePos) {
-            // Simple case: read position before write position
-            availableData = _writePos - _readPos;
-        } else {
-            // Complex case: read position after write position (wrap-around)
-            availableData = _capacity - _readPos;
-        }
+        if (_readPos < _writePos)
+            availableData = _writePos - _readPos; // Simple case: read position before write position
+        else
+            availableData = _capacity - _readPos; // Complex case: read position after write position (wrap-around)
 
         return _buffer + _readPos;
     }
 
     // Get a contiguous write buffer (for zero-copy operations)
-    char* getWriteBuffer(size_t& availableSpace) {
+    char* getWriteBuffer(size_t& availableSpace)
+    {
         if (_size == _capacity) {
             availableSpace = 0;
             return nullptr;
         }
 
-        if (_writePos >= _readPos) {
-            // Write position at or after read position
-            availableSpace = _capacity - _writePos;
-            if (_readPos == 0) {
-                // Special case: can't wrap around if read position is at 0
-                availableSpace = _capacity - _writePos;
-            }
-        } else {
-            // Write position before read position
-            availableSpace = _readPos - _writePos;
-        }
+        if (_writePos >= _readPos)
+            availableSpace = _capacity - _writePos; // Write position at or after read position
+        else
+            availableSpace = _readPos - _writePos; // Write position before read position
 
         return _buffer + _writePos;
     }
 
     // Advance read position after reading data
-    void advanceReadPos(size_t len) {
+    void advanceReadPos(size_t len)
+    {
         size_t bytesToAdvance = std::min(len, _size);
         _readPos = (_readPos + bytesToAdvance) % _capacity;
         _size -= bytesToAdvance;
     }
 
     // Advance write position after writing data
-    void advanceWritePos(size_t len) {
+    void advanceWritePos(size_t len)
+    {
         size_t bytesToAdvance = std::min(len, _capacity - _size);
         _writePos = (_writePos + bytesToAdvance) % _capacity;
         _size += bytesToAdvance;
     }
 
     // Clear buffer
-    void clear() {
+    void clear()
+    {
         _readPos = 0;
         _writePos = 0;
         _size = 0;

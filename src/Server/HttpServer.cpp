@@ -1,13 +1,17 @@
 #include "HttpServer.h"
 #include "Server/Session.h"
+#include "Settings/Settings.h"
 
-HttpServer::HttpServer(uint16_t port, size_t numThreads)
+HttpServer::HttpServer(uint16_t port,
+                       size_t numThreads,
+                       size_t connection_timeout_ms,
+                       size_t backlog_size)
     : _port(port),
     _threadPool(numThreads),
     _running(false),
     _eventLoop(std::make_unique<EventLoop>()),
-    _backlogSize(SOMAXCONN),
-    _connectionTimeout(60000) // 60 seconds timeout
+    _backlogSize(backlog_size),
+    _connectionTimeout(connection_timeout_ms)
 {
 // Initialize platform-specific socket functionality
 #ifdef _WIN32
@@ -16,6 +20,9 @@ HttpServer::HttpServer(uint16_t port, size_t numThreads)
         throw std::runtime_error("Failed to initialize Winsock");
     }
 #endif
+
+    INK_ASSERT_MSG(Settings::isValid(), "Settings not initialized!");
+    INK_ASSERT_MSG(_eventLoop != nullptr, "EventLoop is NULL!");
 
     INK_INFO << "HTTP Server created with " << numThreads << " worker threads";
 }
@@ -56,7 +63,7 @@ void HttpServer::start()
     }
 
     // Set socket buffer sizes for performance
-    int bufSize = 1024 * 1024; // 1MB buffer
+    int bufSize = 1024 * 64; // 64kb buffer
     if (setsockopt(_serverSocket, SOL_SOCKET, SO_RCVBUF,
                    reinterpret_cast<const char*>(&bufSize), sizeof(bufSize)) < 0) {
         INK_WARN << "Failed to set receive buffer size";
@@ -106,8 +113,6 @@ void HttpServer::start()
 
     _running = true;
     _serverThread = std::thread(&HttpServer::acceptLoop, this);
-
-    INK_INFO << "Server started on port " << _port;
 }
 
 void HttpServer::stop()
@@ -170,14 +175,9 @@ void HttpServer::acceptLoop() {
             // Create a session with the EventLoop
             auto session = std::make_shared<Session>(clientSocket, _eventLoop.get());
 
-            // Store connection time for timeout management
-            {
-                std::lock_guard<std::mutex> lock(_connectionsMutex);
-                _connections[clientSocket] = {
-                    session,
-                    std::chrono::steady_clock::now()
-                };
-            }
+            tbb::concurrent_hash_map<socket_t, std::shared_ptr<Session>>::accessor accessor;
+            _connections.insert(accessor, clientSocket);
+            accessor->second = session;
 
             // Process the connection in the thread pool
             _threadPool.submit([session]() {
@@ -203,26 +203,38 @@ void HttpServer::acceptLoop() {
 }
 
 void HttpServer::cleanupIdleConnections() {
-    while (_running) {
-        auto now = std::chrono::steady_clock::now();
+    auto timeout = std::chrono::milliseconds(_connectionTimeout);
 
+    while (_running) {
         // Check connections every second
         std::this_thread::sleep_for(std::chrono::seconds(1));
 
-        std::lock_guard<std::mutex> lock(_connectionsMutex);
+        std::vector<socket_t> keysToCheck;
+        {
+            using range_type = tbb::concurrent_hash_map<socket_t, std::shared_ptr<Session>>::range_type;
+            range_type range = _connections.range();
 
-        for (auto it = _connections.begin(); it != _connections.end();) {
-            auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                 now - it->second.lastActivity).count();
+            for (auto it = range.begin(); it != range.end(); ++it) {
+                keysToCheck.push_back(it->first);
+            }
+        }
 
-            if (elapsedMs > _connectionTimeout) {
-                if (auto session = it->second.session.lock()) {
-                    // If session still exists, close it
+        // Process each key
+        for (socket_t key : keysToCheck) {
+            tbb::concurrent_hash_map<socket_t, std::shared_ptr<Session>>::accessor accessor;
+
+            // Find with accessor - thread safe access
+            if (_connections.find(accessor, key)) {
+                if (accessor->second->isIdle(timeout)) {
+                    auto session = accessor->second;
+                    accessor.release();
+
                     session->close();
+                    _connections.erase(key);
                 }
-                it = _connections.erase(it);
-            } else {
-                ++it;
+                else {
+                    accessor.release();
+                }
             }
         }
     }
@@ -234,12 +246,4 @@ void HttpServer::setBacklogSize(int size) {
 
 void HttpServer::setConnectionTimeout(int milliseconds) {
     _connectionTimeout = milliseconds;
-}
-
-void HttpServer::updateConnectionActivity(socket_t socket) {
-    std::lock_guard<std::mutex> lock(_connectionsMutex);
-    auto it = _connections.find(socket);
-    if (it != _connections.end()) {
-        it->second.lastActivity = std::chrono::steady_clock::now();
-    }
 }

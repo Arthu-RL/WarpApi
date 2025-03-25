@@ -46,6 +46,15 @@ void EventLoop::start() {
 
     for (int i = 0; i < max_threads; i++) {
         _threads.emplace_back(&EventLoop::run, this);
+
+#ifdef _WIN32
+        SetThreadAffinityMask(_threads.back().native_handle(), 1ULL << i);
+#else
+        cpu_set_t cpuset;
+        CPU_ZERO(&cpuset);
+        CPU_SET(i, &cpuset);
+        pthread_setaffinity_np(_threads.back().native_handle(), sizeof(cpu_set_t), &cpuset);
+#endif
     }
 
     INK_DEBUG << "EventLoop started with " << max_threads << " threads";
@@ -86,10 +95,10 @@ void EventLoop::addSession(std::shared_ptr<Session> session) {
 
     socket_t sockfd = session->getSocket();
 
-    {
-        std::lock_guard<std::mutex> lock(_sessionsMutex);
-        _sessions[sockfd] = session;
-    }
+    tbb::concurrent_hash_map<socket_t, std::shared_ptr<Session>>::accessor accessor;
+    _sessions.insert(accessor, sockfd);
+    accessor->second = session;
+    accessor.release();
 
 #ifdef _WIN32
     // Associate socket with completion port
@@ -148,10 +157,7 @@ void EventLoop::removeSession(std::shared_ptr<Session> session) {
 
     socket_t sockfd = session->getSocket();
 
-    {
-        std::lock_guard<std::mutex> lock(_sessionsMutex);
-        _sessions.erase(sockfd);
-    }
+    _sessions.erase(sockfd);
 
 #ifdef _WIN32
     // For Windows, IOCP operations should be canceled
@@ -209,13 +215,16 @@ void EventLoop::runWindows() {
         }
 
         std::shared_ptr<Session> session;
-        {
-            std::lock_guard<std::mutex> lock(_sessionsMutex);
-            auto it = _sessions.find(sockfd);
-            if (it != _sessions.end()) {
-                session = it->second;
-            }
+        std::shared_ptr<Session> session;
+        tbb::concurrent_hash_map<socket_t, std::shared_ptr<Session>>::accessor accessor;
+        if (_sessions.find(accessor, sockfd)) {
+            session = accessor->second;
         }
+        else
+        {
+            session = nullptr;
+        }
+        accessor.release();
 
         if (session) {
             OperationType opType = (OperationType)(ULONG_PTR)pOverlapped->hEvent;
@@ -290,15 +299,18 @@ void EventLoop::runLinux() {
             socket_t sockfd = events[i].data.fd;
 
             std::shared_ptr<Session> session;
-            {
-                std::lock_guard<std::mutex> lock(_sessionsMutex);
-                auto it = _sessions.find(sockfd);
-                if (it != _sessions.end()) {
-                    session = it->second;
-                }
+            tbb::concurrent_hash_map<socket_t, std::shared_ptr<Session>>::accessor accessor;
+            if (_sessions.find(accessor, sockfd)) {
+                session = accessor->second;
             }
+            else
+            {
+                session = nullptr;
+            }
+            accessor.release();
 
-            if (session) {
+            if (session)
+            {
                 if (events[i].events & (EPOLLERR | EPOLLHUP)) {
                     // Error or hang-up
                     session->close();

@@ -49,7 +49,7 @@ int main(int argc, char** argv)
         GeneralServices generalServices;
 
         // Create and configure the server
-        HttpServer server(settings.port, settings.max_auxiliar_threads);
+        HttpServer server(settings.port, settings.max_auxiliar_threads, settings.connection_timeout_ms, settings.backlog_size);
         g_server = &server;
 
         // Configure server parameters
@@ -64,7 +64,7 @@ int main(int argc, char** argv)
         server.start();
 
         // Log server status
-        INK_INFO << "Server started successfully on " <<settings.ip << ":" << settings.port;
+        INK_INFO << "Server started successfully on " << settings.ip << ":" << settings.port;
         INK_INFO << "Thread pool size: " << settings.max_threads;
         INK_INFO << "Connection backlog: " << settings.backlog_size;
         INK_INFO << "Connection timeout: " << settings.connection_timeout_ms << "ms";

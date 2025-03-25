@@ -8,10 +8,11 @@
 
 class WARP_API HttpServer {
 public:
-    HttpServer(uint16_t port, size_t numThreads = 2);
+    HttpServer(uint16_t port,
+               size_t numThreads = 2,
+               size_t connection_timeout_ms = 60000,
+               size_t backlog_size = SOMAXCONN);
     ~HttpServer();
-
-    static void pushJob(std::function<void()>&& job);
 
     void start();
     void stop();
@@ -19,9 +20,6 @@ public:
     // Configuration methods
     void setBacklogSize(int size);
     void setConnectionTimeout(int milliseconds);
-
-    // Update connection activity timestamp
-    void updateConnectionActivity(socket_t socket);
 
 private:
     void acceptLoop();
@@ -37,17 +35,10 @@ private:
     // EventLoop for I/O multiplexing
     std::unique_ptr<EventLoop> _eventLoop;
 
-    // Connection management
-    struct ConnectionInfo {
-        std::weak_ptr<Session> session;
-        std::chrono::steady_clock::time_point lastActivity;
-    };
-
-    std::unordered_map<socket_t, ConnectionInfo> _connections;
-    std::mutex _connectionsMutex;
+    SessionTable _connections;
 
     // Configuration
-    int _backlogSize;
-    int _connectionTimeout; // milliseconds
+    size_t _backlogSize;
+    size_t _connectionTimeout; // milliseconds
 };
 #endif // HTTPSERVER_H

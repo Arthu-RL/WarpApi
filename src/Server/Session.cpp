@@ -25,15 +25,10 @@ Session::~Session()
 
 void Session::start()
 {
-    if (_eventLoop) {
-        // Register with event loop
-        _eventLoop->addSession(shared_from_this());
-        // Register interest in reading
-        _eventLoop->updateSessionInterest(shared_from_this(), true, false);
-    } else {
-        // Fallback to synchronous read if no event loop
-        read();
-    }
+    // Register with event loop
+    _eventLoop->addSession(shared_from_this());
+    // Register interest in reading
+    _eventLoop->updateSessionInterest(shared_from_this(), true, false);
 }
 
 void Session::close()
@@ -42,9 +37,7 @@ void Session::close()
     {
         _active = false;
 
-        if (_eventLoop) {
-            _eventLoop->removeSession(shared_from_this());
-        }
+        _eventLoop->removeSession(shared_from_this());
 
 #ifdef _WIN32
         closesocket(_socket);
@@ -88,6 +81,18 @@ void Session::onWriteReady()
     write();
 }
 
+void Session::updateActivity()
+{
+    _lastActivity.store(std::chrono::steady_clock::now());
+}
+
+bool Session::isIdle(std::chrono::milliseconds timeout) const noexcept
+{
+    auto now = std::chrono::steady_clock::now();
+    auto last = _lastActivity.load();
+    return (now - last) > timeout;
+}
+
 void Session::read()
 {
     if (!_active) return;
@@ -95,7 +100,8 @@ void Session::read()
     size_t availableSpace;
     char* writePtr = _readBuffer.getWriteBuffer(availableSpace);
 
-    if (!writePtr || availableSpace == 0) {
+    if (!writePtr || availableSpace == 0)
+    {
         // Buffer is full - expand or handle overflow
         INK_ERROR << "Read buffer full, closing connection";
         close();
@@ -108,18 +114,24 @@ void Session::read()
         _readBuffer.advanceWritePos(bytesRead);
 
         // Try to parse the request - may be partial
-        if (parseRequest()) {
-            // Successfully parsed a complete request, handle it
+        if (parseRequest())
+        {
             handleRequest();
-        } else if (_eventLoop) {
+        }
+        else
+        {
             // Need more data, continue reading
             _eventLoop->updateSessionInterest(shared_from_this(), true, false);
         }
-    } else if (bytesRead == 0) {
+    }
+    else if (bytesRead == 0)
+    {
         // Connection closed by peer
         INK_DEBUG << "Connection closed by peer";
         close();
-    } else {
+    }
+    else
+    {
         // Error or would block
         int errorCode =
 #ifdef _WIN32
@@ -127,11 +139,14 @@ void Session::read()
         if (errorCode != WSAEWOULDBLOCK) {
 #else
             errno;
-        if (errorCode != EAGAIN && errorCode != EWOULDBLOCK) {
+        if (errorCode != EAGAIN && errorCode != EWOULDBLOCK)
+        {
 #endif
             INK_ERROR << "Socket read error: " << errorCode;
             close();
-        } else if (_eventLoop) {
+        }
+        else
+        {
             // Would block, try again later
             _eventLoop->updateSessionInterest(shared_from_this(), true, false);
         }
@@ -141,16 +156,14 @@ void Session::read()
 bool Session::parseRequest()
 {
     // Minimum viable HTTP request size check
-    if (_readBuffer.size() < 16) {
+    if (_readBuffer.size() < 16)
         return false;
-    }
 
     size_t availableData;
     const char* data = _readBuffer.getReadBuffer(availableData);
 
-    if (!data || availableData == 0) {
+    if (!data || availableData == 0)
         return false;
-    }
 
     // Search for end of headers delimiter
     const char* endOfHeaders = nullptr;
@@ -280,13 +293,10 @@ void Session::handleRequest()
     }
 
     // Start writing the response
-    if (_eventLoop) {
-        _writingResponse = true;
-        _eventLoop->updateSessionInterest(shared_from_this(), false, true);
-    } else {
-        // Fallback to synchronous write
-        write();
-    }
+    _writingResponse = true;
+    _eventLoop->updateSessionInterest(shared_from_this(), false, true);
+
+    updateActivity();
 }
 
 void Session::write()
@@ -301,10 +311,8 @@ void Session::write()
         _writingResponse = false;
 
         if (_keepAlive) {
-            // For keep-alive, prepare for next request
-            if (_eventLoop) {
-                _eventLoop->updateSessionInterest(shared_from_this(), true, false);
-            }
+
+            _eventLoop->updateSessionInterest(shared_from_this(), true, false);
 
             // Reset request state
             _req.reset();
@@ -324,22 +332,15 @@ void Session::write()
         // Check if we've written everything
         if (_writeBuffer.size() > 0) {
             // Still more to write
-            if (_eventLoop) {
-                _eventLoop->updateSessionInterest(shared_from_this(), false, true);
-            } else {
-                // Recursive call for synchronous write (careful with stack)
-                write();
-            }
+            _eventLoop->updateSessionInterest(shared_from_this(), false, true);
+
         } else {
             // All data written
             _writingResponse = false;
 
             if (_keepAlive) {
                 // Prepare for next request if keep-alive
-                if (_eventLoop) {
-                    _eventLoop->updateSessionInterest(shared_from_this(), true, false);
-                }
-
+                _eventLoop->updateSessionInterest(shared_from_this(), true, false);
                 // Reset request for next use
                 _req.reset();
             } else {
@@ -359,7 +360,9 @@ void Session::write()
 #endif
             INK_ERROR << "Socket write error: " << errorCode;
             close();
-        } else if (_eventLoop) {
+        }
+        else
+        {
             // Would block, try again later
             _eventLoop->updateSessionInterest(shared_from_this(), false, true);
         }

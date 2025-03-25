@@ -4,7 +4,6 @@
 #pragma once
 
 #include "WarpDefs.h"
-#include <unordered_map>
 #include <memory>
 #include <thread>
 #include <vector>
@@ -55,7 +54,7 @@ private:
 #endif
 
     // Session tracking with thread safety
-    std::unordered_map<socket_t, std::shared_ptr<Session>> _sessions;
+    SessionTable _sessions;
     std::mutex _sessionsMutex;
 
     std::vector<std::thread> _threads;

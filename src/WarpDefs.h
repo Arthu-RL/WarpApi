@@ -27,6 +27,7 @@ typedef int socket_t;
 #endif
 
 #include <ink/ink.hpp>
+#include <tbb/concurrent_hash_map.h>
 
 #define WARP_API
 
@@ -90,11 +91,11 @@ enum WARP_API StatusCode {
 
 class WARP_API HttpRequest;
 class WARP_API HttpResponse;
-
-typedef std::function<void(const HttpRequest&, HttpResponse&)> RequestHandler;
-
 class WARP_API Session;
 class WARP_API EventLoop;
 class WARP_API HttpServer;
+
+typedef std::function<void(const HttpRequest&, HttpResponse&)> RequestHandler;
+typedef tbb::concurrent_hash_map<socket_t, std::shared_ptr<Session>> SessionTable;
 
 #endif // WARPDEFS_H

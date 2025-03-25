@@ -23,6 +23,9 @@ public:
     void onReadReady();
     void onWriteReady();
 
+    void updateActivity();
+    bool isIdle(std::chrono::milliseconds timeout) const noexcept;
+
 private:
     void read();
     void write();
@@ -32,7 +35,9 @@ private:
     socket_t _socket;
     HttpRequest _req;
     bool _keepAlive;
+
     std::atomic<bool> _active;
+    std::atomic<std::chrono::steady_clock::time_point> _lastActivity;
 
     // Use RingBuffer for efficient I/O
     RingBuffer _readBuffer;
