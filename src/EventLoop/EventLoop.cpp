@@ -212,16 +212,14 @@ void EventLoop::runWindows() {
         }
 
         std::shared_ptr<Session> session;
-        std::shared_ptr<Session> session;
-        tbb::concurrent_hash_map<socket_t, std::shared_ptr<Session>>::accessor accessor;
-        if (_sessions.find(accessor, sockfd)) {
-            session = accessor->second;
+        auto it = _sessions.find(sockfd);
+        if (it != _sessions.end()) {
+            session = it->second;
         }
         else
         {
             session = nullptr;
         }
-        accessor.release();
 
         if (session) {
             OperationType opType = (OperationType)(ULONG_PTR)pOverlapped->hEvent;
