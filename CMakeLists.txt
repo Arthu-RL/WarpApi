@@ -12,6 +12,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Add library paths
 list(APPEND CMAKE_PREFIX_PATH "$ENV{LIBRARY_PATH}")
 
+set(ALL_LIBRARY_PATH "$ENV{LIBRARY_PATH}/lib")
+
 # # Find required packages
 find_package(Threads REQUIRED)
 find_package(Boost REQUIRED)
