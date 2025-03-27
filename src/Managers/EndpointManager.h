@@ -4,7 +4,7 @@
 #pragma once
 
 #include <memory>
-#include <unordered_map>
+#include <tbb/concurrent_unordered_map.h>
 
 #include "Endpoint/Endpoint.h"
 
@@ -21,8 +21,7 @@ public:
     static uint count();
 
 private:
-    static std::unordered_map<std::string, std::shared_ptr<Endpoint>> _endpoints_map;
-    static std::mutex _mutex;
+    static tbb::concurrent_unordered_map<std::string, std::shared_ptr<Endpoint>> _endpoints_map;
 };
 
 #endif // ENDPOINTMANAGER_H

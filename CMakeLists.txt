@@ -9,6 +9,8 @@ project(WarpApi
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static-libstdc++ -static-libgcc")
+
 # Add library paths
 list(APPEND CMAKE_PREFIX_PATH "$ENV{LIBRARY_PATH}")
 
@@ -16,9 +18,12 @@ set(ALL_LIBRARY_PATH "$ENV{LIBRARY_PATH}/lib")
 
 # # Find required packages
 find_package(Threads REQUIRED)
-find_package(Boost REQUIRED)
+find_library(TBB_STATIC_LIB NAMES libtbb.a tbb HINTS ${ALL_LIBRARY_PATH})
 find_library(INK_LIB ink HINTS ${ALL_LIBRARY_PATH})
-find_library(TBB_LIB tbb HINTS ${ALL_LIBRARY_PATH})
+
+if(NOT TBB_STATIC_LIB)
+    message(FATAL_ERROR "TBB static library (libtbb.a) not found!")
+endif()
 
 # Collect source files
 file(GLOB_RECURSE SOURCES
@@ -51,10 +56,10 @@ target_include_directories(${PROJECT_NAME} PUBLIC
 )
 
 # Link libraries
-target_link_libraries(${PROJECT_NAME} PUBLIC
+target_link_libraries(${PROJECT_NAME} PRIVATE
     Threads::Threads
+    ${TBB_STATIC_LIB}
     ${INK_LIB}
-    ${TBB_LIB}
     dl
 )
 

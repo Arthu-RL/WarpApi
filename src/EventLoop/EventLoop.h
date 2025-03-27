@@ -44,8 +44,8 @@ private:
     void updateSessionInterestWindows(std::shared_ptr<Session> session, bool interestedInReading, bool interestedInWriting);
 #else
     // Linux-specific implementation
-    int _epollFd;
-    int _wakeupFd = -1;
+    ink_i32 _epollFd;
+    ink_i32 _wakeupFd = -1;
 
     // Helper methods
     void runLinux();
@@ -56,7 +56,7 @@ private:
     SessionTable _sessions;
 
     std::vector<std::thread> _threads;
-    std::atomic<bool> _running;
+    std::atomic<ink_bool> _running;
 };
 
 #endif // EVENT_LOOP_H

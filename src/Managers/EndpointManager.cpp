@@ -1,12 +1,9 @@
 #include "EndpointManager.h"
 
-std::unordered_map<std::string, std::shared_ptr<Endpoint>> EndpointManager::_endpoints_map;
-std::mutex EndpointManager::_mutex;
+tbb::concurrent_unordered_map<std::string, std::shared_ptr<Endpoint>> EndpointManager::_endpoints_map;
 
 void EndpointManager::registerEndpoint(std::shared_ptr<Endpoint> endpoint)
 {
-    std::lock_guard<std::mutex> lock(_mutex);
-
     const std::string endpoint_id = endpoint->id();
 
     if (_endpoints_map.find(endpoint_id) != _endpoints_map.end())
@@ -17,9 +14,7 @@ void EndpointManager::registerEndpoint(std::shared_ptr<Endpoint> endpoint)
 
 std::shared_ptr<Endpoint> EndpointManager::getEndpoint(const std::string& endpoint_id)
 {
-    std::lock_guard<std::mutex> lock(_mutex);
-
-    auto it = _endpoints_map.find(endpoint_id);
+    const auto& it = _endpoints_map.find(endpoint_id);
     if (it != _endpoints_map.end())
         return it->second;
 
@@ -28,6 +23,5 @@ std::shared_ptr<Endpoint> EndpointManager::getEndpoint(const std::string& endpoi
 
 uint EndpointManager::count()
 {
-    std::lock_guard<std::mutex> lock(_mutex);
     return _endpoints_map.size();
 }
