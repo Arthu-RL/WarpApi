@@ -59,6 +59,16 @@ bool Session::setNonBlocking()
 #endif
 }
 
+std::thread::id Session::getWorkerId() const noexcept
+{
+    return _workerId;
+}
+
+void Session::setWorkerId(std::thread::id workerId) noexcept
+{
+    _workerId = workerId;
+}
+
 const bool Session::isActive() const noexcept
 {
     return _active;
@@ -112,6 +122,7 @@ void Session::read()
 
     if (bytesRead > 0) {
         _readBuffer.advanceWritePos(bytesRead);
+        INK_TRACE << "To Read on socket: " << _socket << " buffer: \n" << writePtr;
 
         // Try to parse the request - may be partial
         if (parseRequest())
@@ -184,6 +195,7 @@ bool Session::parseRequest()
     if (!lineEnd) return false;
 
     std::string_view requestLine(data, lineEnd - data);
+    INK_TRACE << "requestLine: " << requestLine;
 
     // Find first space (after method)
     size_t methodEnd = requestLine.find(' ');

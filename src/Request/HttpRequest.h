@@ -12,7 +12,7 @@ struct WARP_API RequestData {
     RequestData() :
         method(Method::UNKNOWN),
         path(""),
-        version("HTTP/1.1"),
+        version("HTTP/2.0"),
         headers({}),
         body(""),
         queryParams({}) {}

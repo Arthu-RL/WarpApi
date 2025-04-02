@@ -48,6 +48,8 @@ int main(int argc, char** argv)
         // Register services/endpoints
         GeneralServices generalServices;
 
+        INK_INFO << "Registered endpoints: " << endpointManager.count();
+
         // Create and configure the server
         HttpServer server(settings.port, settings.max_auxiliar_threads, settings.connection_timeout_ms, settings.backlog_size);
         g_server = &server;
@@ -63,18 +65,10 @@ int main(int argc, char** argv)
         // Start the server
         server.start();
 
-        // Log server status
-        INK_INFO << "Server started successfully on " << settings.ip << ":" << settings.port;
-        INK_INFO << "Thread pool size: " << settings.max_threads;
-        INK_INFO << "Connection backlog: " << settings.backlog_size;
-        INK_INFO << "Connection timeout: " << settings.connection_timeout_ms << "ms";
-        INK_INFO << "Registered endpoints: " << endpointManager.count();
-        INK_INFO << "Press Ctrl+C to stop the server";
-
-        // Keep main thread alive
-        while (true) {
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-        }
+        // // Keep main thread alive (don't need because main thread is running server loop)
+        // while (true) {
+        //     std::this_thread::sleep_for(std::chrono::seconds(1));
+        // }
     }
     catch (const std::exception& e)
     {

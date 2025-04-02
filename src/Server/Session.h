@@ -26,6 +26,9 @@ public:
     void updateActivity();
     bool isIdle(std::chrono::milliseconds timeout) const noexcept;
 
+    std::thread::id getWorkerId() const noexcept;
+    void setWorkerId(std::thread::id workerId) noexcept;
+
 private:
     void read();
     void write();
@@ -49,6 +52,8 @@ private:
 
     // Reference to the event loop for async I/O
     EventLoop* _eventLoop;
+
+    std::thread::id _workerId;
 };
 
 #endif // SESSION_H

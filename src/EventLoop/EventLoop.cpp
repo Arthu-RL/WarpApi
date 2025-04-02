@@ -2,22 +2,13 @@
 #include "Server/Session.h"
 #include "Settings/Settings.h"
 
-EventLoop::EventLoop() :
-    _running(false) {
-#ifdef _WIN32
-    // Initialize Windows IOCP
-    _completionPort = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 0);
-    if (_completionPort == NULL) {
-        throw std::runtime_error("Failed to create I/O completion port");
-    }
-#else
-    // Initialize Linux epoll with a large size hint
-    _epollFd = epoll_create1(0);
-    if (_epollFd < 0) {
-        throw std::runtime_error("Failed to create epoll instance");
-    }
-#endif
+ink_u16 EventLoop::_currentThread = 0;
 
+EventLoop::EventLoop() :
+    _running(false),
+    _workerEpollFd({}),
+    _workerWakeupFd({})
+{
     INK_DEBUG << "EventLoop created";
 }
 
@@ -29,8 +20,11 @@ EventLoop::~EventLoop() {
         CloseHandle(_completionPort);
     }
 #else
-    if (_epollFd >= 0) {
-        close(_epollFd);
+    for (auto it = _workerEpollFd.begin(); it != _workerEpollFd.end(); ++it)
+    {
+        if (it->second >= 0) {
+            close(it->second);
+        }
     }
 #endif
 
@@ -44,8 +38,26 @@ void EventLoop::start() {
 
     uint max_threads = Settings::getSettings().max_threads;
 
+#ifdef _WIN32
+    // Initialize Windows IOCP
+    _completionPort = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 0);
+    if (_completionPort == NULL) {
+        throw std::runtime_error("Failed to create I/O completion port");
+    }
+
     for (int i = 0; i < max_threads; i++) {
         _threads.emplace_back(&EventLoop::run, this);
+
+#else
+    for (int i = 0; i < max_threads; i++) {
+        _threads.emplace_back(&EventLoop::run, this);
+
+        // Initialize Linux epoll with a large size hint
+        _workerEpollFd[_threads[i].get_id()] = epoll_create1(0);
+        if (_workerEpollFd[_threads[i].get_id()] < 0) {
+            throw std::runtime_error("Failed to create epoll instance");
+        }
+#endif
 
 #ifdef _WIN32
         SetThreadAffinityMask(_threads.back().native_handle(), 1ULL << i);
@@ -73,10 +85,14 @@ void EventLoop::stop() {
     }
 #else
     // Use eventfd to wake up epoll
-    if (_wakeupFd >= 0) {
-        uint64_t one = 1;
-        write(_wakeupFd, &one, sizeof(one));
+    for (auto it = _workerWakeupFd.begin(); it != _workerWakeupFd.end(); ++it)
+    {
+        if (it->second >= 0) {
+            uint64_t one = 1;
+            write(it->second, &one, sizeof(one));
+        }
     }
+
 #endif
 
     for (auto& thread : _threads) {
@@ -124,16 +140,29 @@ void EventLoop::addSession(std::shared_ptr<Session> session) {
         }
     }
 #else
-    // For Linux epoll, register the socket with EPOLLET (edge-triggered) for better performance
+
+    {
+        std::lock_guard<std::mutex> lock(_addSessionMutex);
+
+        _currentThread = _currentThread = (_currentThread+1)%Settings::getSettings().max_threads;
+    }
+
+    auto it = std::next(_workerEpollFd.begin(), _currentThread);
+
     struct epoll_event ev;
     ev.events = EPOLLIN | EPOLLET;
     ev.data.fd = sockfd;
 
-    if (epoll_ctl(_epollFd, EPOLL_CTL_ADD, sockfd, &ev) < 0) {
+    if (epoll_ctl(it->second, EPOLL_CTL_ADD, sockfd, &ev) < 0) {
         INK_ERROR << "Failed to add socket to epoll: " << strerror(errno);
         removeSession(session);
         return;
     }
+
+    session->setWorkerId(it->first);
+
+    // For Linux epoll, register the socket with EPOLLET (edge-triggered) for better performance
+
 #endif
 
     INK_DEBUG << "Session added to EventLoop";
@@ -162,7 +191,7 @@ void EventLoop::removeSession(std::shared_ptr<Session> session) {
     CancelIoEx((HANDLE)sockfd, NULL);
 #else
     // Remove from epoll
-    epoll_ctl(_epollFd, EPOLL_CTL_DEL, sockfd, nullptr);
+    epoll_ctl(_workerEpollFd[session->getWorkerId()], EPOLL_CTL_DEL, sockfd, nullptr);
 #endif
 
     INK_DEBUG << "Session removed from EventLoop";
@@ -256,20 +285,25 @@ void EventLoop::runWindows() {
 }
 #else
 void EventLoop::runLinux() {
-    const int MAX_EVENTS = 1024;
     struct epoll_event events[MAX_EVENTS];
 
     // Create eventfd for wakeup
-    _wakeupFd = eventfd(0, EFD_NONBLOCK);
-    if (_wakeupFd >= 0) {
-        struct epoll_event ev;
-        ev.events = EPOLLIN;
-        ev.data.fd = _wakeupFd;
-        epoll_ctl(_epollFd, EPOLL_CTL_ADD, _wakeupFd, &ev);
-    }
+    auto wid = std::this_thread::get_id();
+
+    auto& wakeupfd = _workerWakeupFd[wid];
+    wakeupfd = eventfd(0, EFD_NONBLOCK);
+
+    auto& epollfd = _workerEpollFd[wid];
+
+    struct epoll_event ev;
+    ev.events = EPOLLIN;
+    ev.data.fd = wakeupfd;
+    epoll_ctl(epollfd, EPOLL_CTL_ADD, wakeupfd, &ev);
+
+    INK_TRACE << "wakeupfd register: " <<  wakeupfd << " for thread: " << wid; // TIRA
 
     while (_running) {
-        int numEvents = epoll_wait(_epollFd, events, MAX_EVENTS, 1000);
+        int numEvents = epoll_wait(epollfd, events, MAX_EVENTS, EPOLL_WAIT_TIMEOUT);
 
         if (!_running) break;
 
@@ -285,11 +319,13 @@ void EventLoop::runLinux() {
 
         for (int i = 0; i < numEvents; i++) {
             // Check if this is the wakeup event
-            if (_wakeupFd >= 0 && events[i].data.fd == _wakeupFd) {
+            if (wakeupfd >= 0 && events[i].data.fd == wakeupfd) {
                 uint64_t value;
-                read(_wakeupFd, &value, sizeof(value));
+                read(wakeupfd, &value, sizeof(value));
+                INK_TRACE << "wakeup thread: " << wid;
                 continue;
             }
+            INK_TRACE << "thread handle: " << wid;
 
             socket_t sockfd = events[i].data.fd;
 
@@ -325,9 +361,9 @@ void EventLoop::runLinux() {
     }
 
     // Close wakeup eventfd
-    if (_wakeupFd >= 0) {
-        close(_wakeupFd);
-        _wakeupFd = -1;
+    if (wakeupfd >= 0) {
+        close(wakeupfd);
+        wakeupfd = -1;
     }
 }
 #endif
@@ -367,7 +403,7 @@ void EventLoop::updateSessionInterestLinux(std::shared_ptr<Session> session, boo
         ev.events |= EPOLLOUT;
     }
 
-    if (epoll_ctl(_epollFd, EPOLL_CTL_MOD, sockfd, &ev) < 0) {
+    if (epoll_ctl(_workerEpollFd[session->getWorkerId()], EPOLL_CTL_MOD, sockfd, &ev) < 0) {
         INK_ERROR << "epoll_ctl error: " << strerror(errno);
         return;
     }

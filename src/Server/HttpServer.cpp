@@ -111,8 +111,15 @@ void HttpServer::start()
         _cleanupThread = std::thread(&HttpServer::cleanupIdleConnections, this);
     }
 
+    auto settings = Settings::getSettings();
+    INK_INFO << "Server started successfully on " << settings.ip << ":" << settings.port;
+    INK_INFO << "Thread pool size: " << settings.max_threads;
+    INK_DEBUG << "Connection backlog: " << settings.backlog_size;
+    INK_DEBUG << "Connection timeout: " << settings.connection_timeout_ms << "ms";
+
     _running = true;
-    _serverThread = std::thread(&HttpServer::acceptLoop, this);
+    // _serverThread = std::thread(&HttpServer::acceptLoop, this);
+    acceptLoop(); // Using the main thread
 }
 
 void HttpServer::stop()
@@ -135,9 +142,9 @@ void HttpServer::stop()
     close(_serverSocket);
 #endif
 
-    if (_serverThread.joinable()) {
-        _serverThread.join();
-    }
+    // if (_serverThread.joinable()) {
+    //     _serverThread.join();
+    // }
 
     if (_cleanupThread.joinable()) {
         _cleanupThread.join();

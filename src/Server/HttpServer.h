@@ -27,7 +27,7 @@ private:
 
     uint16_t _port;
     socket_t _serverSocket;
-    std::thread _serverThread;
+    // std::thread _serverThread;
     std::thread _cleanupThread;
     std::atomic<bool> _running;
     ink::ThreadPool _threadPool;

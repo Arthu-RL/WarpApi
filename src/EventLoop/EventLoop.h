@@ -44,8 +44,9 @@ private:
     void updateSessionInterestWindows(std::shared_ptr<Session> session, bool interestedInReading, bool interestedInWriting);
 #else
     // Linux-specific implementation
-    ink_i32 _epollFd;
-    ink_i32 _wakeupFd = -1;
+    // TODO USE ONE EPOLLFD AND WAKEFD FOR EACH WORKER
+    std::unordered_map<std::thread::id, ink_i32> _workerEpollFd;
+    std::unordered_map<std::thread::id, ink_i32> _workerWakeupFd;
 
     // Helper methods
     void runLinux();
@@ -57,6 +58,9 @@ private:
 
     std::vector<std::thread> _threads;
     std::atomic<ink_bool> _running;
+
+    static ink_u16 _currentThread;
+    std::mutex _addSessionMutex;
 };
 
 #endif // EVENT_LOOP_H

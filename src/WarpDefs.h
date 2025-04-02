@@ -31,6 +31,9 @@ typedef int socket_t;
 
 #define WARP_API
 
+#define MAX_EVENTS 1024
+#define EPOLL_WAIT_TIMEOUT 1000 // 1 sec
+
 enum WARP_API Method { GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS, UNKNOWN };
 
 // HTTP Status Codes
