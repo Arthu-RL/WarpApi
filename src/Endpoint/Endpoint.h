@@ -10,7 +10,7 @@
  * The Endpoint class represents a single API endpoint.
  * Each endpoint is associated with a unique route and can process incoming requests using a provided ResponseManager.
  */
-class Endpoint {
+class WARP_API Endpoint {
 public:
     explicit Endpoint(const std::string& route, const Method method) :
         _route(route), _method(method)

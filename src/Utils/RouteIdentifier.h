@@ -5,7 +5,7 @@
 
 #include "WarpDefs.h"
 
-class RouteIdentifier
+class WARP_API RouteIdentifier
 {
 public:
     RouteIdentifier();

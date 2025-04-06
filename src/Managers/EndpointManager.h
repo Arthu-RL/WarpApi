@@ -8,7 +8,7 @@
 
 #include "Endpoint/Endpoint.h"
 
-class EndpointManager
+class WARP_API EndpointManager
 {
 public:
     EndpointManager() = default;

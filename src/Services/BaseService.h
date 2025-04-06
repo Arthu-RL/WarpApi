@@ -8,7 +8,7 @@
 #include "Endpoint/Endpoint.h"
 #include "Managers/EndpointManager.h"
 
-class BaseService
+class WARP_API BaseService
 {
 public:
     explicit BaseService() :

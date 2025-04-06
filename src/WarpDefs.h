@@ -33,6 +33,7 @@ typedef int socket_t;
 
 #define MAX_EVENTS 1024
 #define EPOLL_WAIT_TIMEOUT 1000 // 1 sec
+#define MIN_REQUEST_SIZE 16
 
 enum WARP_API Method { GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS, UNKNOWN };
 

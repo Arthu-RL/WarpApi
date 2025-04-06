@@ -300,7 +300,7 @@ void EventLoop::runLinux() {
     ev.data.fd = wakeupfd;
     epoll_ctl(epollfd, EPOLL_CTL_ADD, wakeupfd, &ev);
 
-    INK_TRACE << "wakeupfd register: " <<  wakeupfd << " for thread: " << wid; // TIRA
+    INK_TRACE << "wakeupfd register: " <<  wakeupfd << " for thread: " << wid;
 
     while (_running) {
         int numEvents = epoll_wait(epollfd, events, MAX_EVENTS, EPOLL_WAIT_TIMEOUT);
@@ -325,7 +325,6 @@ void EventLoop::runLinux() {
                 INK_TRACE << "wakeup thread: " << wid;
                 continue;
             }
-            INK_TRACE << "thread handle: " << wid;
 
             socket_t sockfd = events[i].data.fd;
 

@@ -122,7 +122,7 @@ void Session::read()
 
     if (bytesRead > 0) {
         _readBuffer.advanceWritePos(bytesRead);
-        INK_TRACE << "To Read on socket: " << _socket << " buffer: \n" << writePtr;
+        // INK_TRACE << "To Read on socket: " << _socket << " buffer: \n" << writePtr;
 
         // Try to parse the request - may be partial
         if (parseRequest())
@@ -166,44 +166,41 @@ void Session::read()
 
 bool Session::parseRequest()
 {
-    // Minimum viable HTTP request size check
-    if (_readBuffer.size() < 16)
-        return false;
-
     size_t availableData;
     const char* data = _readBuffer.getReadBuffer(availableData);
-
-    if (!data || availableData == 0)
+    if (!data || availableData < MIN_REQUEST_SIZE)
         return false;
 
-    // Search for end of headers delimiter
     const char* endOfHeaders = nullptr;
     for (size_t i = 0; i < availableData - 3; i++) {
-        if (data[i] == '\r' && data[i+1] == '\n' && data[i+2] == '\r' && data[i+3] == '\n') {
+        if (data[i] == '\r' && data[i+1] == '\n' &&
+            data[i+2] == '\r' && data[i+3] == '\n') {
             endOfHeaders = data + i + 4;
             break;
         }
     }
+    if (!endOfHeaders) return false;
 
-    if (!endOfHeaders) {
-        // Headers aren't complete yet
-        return false;
+    const char* lineEnd = nullptr;
+    for (size_t i = 0; i < availableData - 1; i++) {
+        if (data[i] == '\r' && data[i+1] == '\n') {
+            lineEnd = data + i;
+            break;
+        }
     }
-
-    // Parse request line
-    const char* lineEnd = strstr(data, "\r\n");
     if (!lineEnd) return false;
 
     std::string_view requestLine(data, lineEnd - data);
-    INK_TRACE << "requestLine: " << requestLine;
 
     // Find first space (after method)
     size_t methodEnd = requestLine.find(' ');
-    if (methodEnd == std::string_view::npos) return false;
+    if (methodEnd == std::string_view::npos)
+        return false;
 
     // Find second space (after path)
     size_t pathEnd = requestLine.find(' ', methodEnd + 1);
-    if (pathEnd == std::string_view::npos) return false;
+    if (pathEnd == std::string_view::npos)
+        return false;
 
     std::string_view method = requestLine.substr(0, methodEnd);
     std::string_view path = requestLine.substr(methodEnd + 1, pathEnd - methodEnd - 1);
@@ -213,50 +210,69 @@ bool Session::parseRequest()
     _req.setPath(std::string(path));
     _req.setVersion(std::string(version));
 
-    // Parse headers
+    // Parse headers in a single pass
     const char* headerStart = lineEnd + 2;
-    const char* headerLineEnd = headerStart;
+    const char* headerEnd = headerStart;
+    std::string_view connectionValue;
+    std::string_view contentLengthValue;
 
-    while (headerLineEnd < endOfHeaders - 2) {
-        headerLineEnd = strstr(headerStart, "\r\n");
-        if (!headerLineEnd) break;
-
-        std::string_view headerLine(headerStart, headerLineEnd - headerStart);
-
-        if (headerLine.empty()) {
-            break;
+    while (headerEnd < endOfHeaders - 2) {
+        headerEnd = nullptr;
+        for (const char* p = headerStart; p < endOfHeaders - 1; p++) {
+            if (*p == '\r' && *(p+1) == '\n') {
+                headerEnd = p;
+                break;
+            }
         }
+        if (!headerEnd)
+            break;
+
+        std::string_view headerLine(headerStart, headerEnd - headerStart);
+        if (headerLine.empty())
+            break;
 
         size_t colonPos = headerLine.find(": ");
         if (colonPos != std::string_view::npos) {
-            std::string key(headerLine.substr(0, colonPos));
-            std::string value(headerLine.substr(colonPos + 2));
-            _req.addHeader(key, value);
+            std::string_view key = headerLine.substr(0, colonPos);
+            std::string_view value = headerLine.substr(colonPos + 2);
 
-            // Check for Connection header for keep-alive
+            // Add header to request
+            _req.addHeader(std::string(key), std::string(value));
+
+            // Track important headers by direct comparison (avoiding extra lookups)
             if (key == "Connection") {
-                _keepAlive = (value == "keep-alive");
+                connectionValue = value;
+            } else if (key == "Content-Length") {
+                contentLengthValue = value;
+            }
+        }
+        headerStart = headerEnd + 2;
+    }
+
+    // Set connection state
+    _keepAlive = (connectionValue == "keep-alive");
+
+    // Process the body if Content-Length is present
+    if (!contentLengthValue.empty()) {
+        // Use fast string-to-int conversion avoiding exceptions from std::stoul
+        size_t contentLength = 0;
+        for (char c : contentLengthValue) {
+            if (c >= '0' && c <= '9') {
+                contentLength = contentLength * 10 + (c - '0');
+            } else {
+                // Invalid content length
+                return false;
             }
         }
 
-        headerStart = headerLineEnd + 2;
-    }
-
-    // Check if we have the full body based on Content-Length
-    std::string contentLengthStr = _req.getHeader("Content-Length");
-    if (!contentLengthStr.empty()) {
-        size_t contentLength = std::stoul(contentLengthStr);
         size_t headersSize = endOfHeaders - data;
-
         if (availableData < headersSize + contentLength) {
             // Need more data for complete body
             return false;
         }
 
-        // We have the full body, set it
+        // Set body without additional copies
         _req.setBody(std::string(endOfHeaders, contentLength));
-
-        // Advance the read position past this complete request
         _readBuffer.advanceReadPos(headersSize + contentLength);
     } else {
         // No Content-Length, assume no body

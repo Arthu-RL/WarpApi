@@ -3,9 +3,10 @@
 
 #pragma once
 
+#include <ink/RingBuffer.h>
+
 #include "WarpDefs.h"
 #include "Request/HttpRequest.h"
-#include "Utils/RingBuffer.h"
 #include "EventLoop/EventLoop.h"
 
 class WARP_API Session : public std::enable_shared_from_this<Session> {
@@ -43,8 +44,8 @@ private:
     std::atomic<std::chrono::steady_clock::time_point> _lastActivity;
 
     // Use RingBuffer for efficient I/O
-    RingBuffer _readBuffer;
-    RingBuffer _writeBuffer;
+    ink::RingBuffer _readBuffer;
+    ink::RingBuffer _writeBuffer;
 
     // Request/response state tracking
     bool _readingHeaders;

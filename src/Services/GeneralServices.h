@@ -5,7 +5,7 @@
 
 #include "BaseService.h"
 
-class GeneralServices : public BaseService
+class WARP_API GeneralServices : public BaseService
 {
 public:
     GeneralServices();
