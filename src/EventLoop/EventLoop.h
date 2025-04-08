@@ -27,6 +27,10 @@ private:
     // Event loop thread function
     void run();
 
+    // Attention: not sure if windows implementation is working properly.
+    // This project is linux focused, but can be adjusted for windows easily.
+
+    // Windows implementation,try to use a lot of handlers
 #ifdef _WIN32
     // Windows-specific implementation
     // Type for IOCP operations
@@ -44,7 +48,6 @@ private:
     void updateSessionInterestWindows(std::shared_ptr<Session> session, bool interestedInReading, bool interestedInWriting);
 #else
     // Linux-specific implementation
-    // TODO USE ONE EPOLLFD AND WAKEFD FOR EACH WORKER
     std::unordered_map<std::thread::id, ink_i32> _workerEpollFd;
     std::unordered_map<std::thread::id, ink_i32> _workerWakeupFd;
 

@@ -31,7 +31,7 @@ typedef int socket_t;
 
 #define WARP_API
 
-#define MAX_EVENTS 1024
+#define MAX_EVENTS 16384
 #define EPOLL_WAIT_TIMEOUT 1000 // 1 sec
 #define MIN_REQUEST_SIZE 16
 
