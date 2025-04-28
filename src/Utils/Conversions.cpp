@@ -48,14 +48,3 @@ const std::string Conversions::urlDecode(const std::string& input)
 
     return decoded;
 }
-
-const int Conversions::cto_int(char c)
-{
-    if (c >= '0' && c <= '9')
-    {
-        return c - '0';
-    } else
-    {
-        return -1;
-    }
-}

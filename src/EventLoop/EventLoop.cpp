@@ -9,7 +9,7 @@ EventLoop::EventLoop() :
     _workerEpollFd({}),
     _workerWakeupFd({})
 {
-    INK_DEBUG << "EventLoop created";
+    // Empty
 }
 
 EventLoop::~EventLoop() {
