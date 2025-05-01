@@ -47,7 +47,8 @@ public:
         // _data.keep_alive(false);
     }
 
-    static Method parseMethod(const std::string& method) {
+    static Method parseMethod(const std::string_view& method)
+    {
         if (method == "GET") return GET;
         if (method == "POST") return POST;
         if (method == "PUT") return PUT;
@@ -72,9 +73,9 @@ public:
         return _data.path;
     }
 
-    void setPath(const std::string& path)
+    void setPath(const std::string_view& path)
     {
-        _data.path = path;
+        _data.path = std::string(path);
     }
 
     const std::string& body() const noexcept
@@ -82,15 +83,15 @@ public:
         return _data.body;
     }
 
-    void setBody(const std::string& buffer)
+    void setBody(const std::string_view& buffer)
     {
-        _data.body = buffer;
+        _data.body = std::string(buffer);
     }
 
-    void appendToBody(const std::string& buffer)
-    {
-        _data.body.append(buffer);
-    }
+    // void appendToBody(const std::string& buffer)
+    // {
+    //     _data.body.append(buffer);
+    // }
 
     const std::unordered_map<std::string, std::string>& headers() const noexcept
     {
@@ -176,9 +177,9 @@ public:
         return _data.version;
     }
 
-    void setVersion(const std::string& version)
+    void setVersion(const std::string_view& version)
     {
-        _data.version = version;
+        _data.version = std::string(version);
     }
 
     const RequestData& getRequestData() const noexcept

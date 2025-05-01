@@ -144,7 +144,7 @@ void EventLoop::addSession(std::shared_ptr<Session> session) {
     {
         std::lock_guard<std::mutex> lock(_addSessionMutex);
 
-        _currentThread = _currentThread = (_currentThread+1)%Settings::getSettings().max_threads;
+        _currentThread = (_currentThread+1)%Settings::getSettings().max_threads;
     }
 
     auto it = std::next(_workerEpollFd.begin(), _currentThread);
@@ -153,7 +153,8 @@ void EventLoop::addSession(std::shared_ptr<Session> session) {
     ev.events = EPOLLIN | EPOLLET;
     ev.data.fd = sockfd;
 
-    if (epoll_ctl(it->second, EPOLL_CTL_ADD, sockfd, &ev) < 0) {
+    if (epoll_ctl(it->second, EPOLL_CTL_ADD, sockfd, &ev) < 0)
+    {
         INK_ERROR << "Failed to add socket to epoll: " << strerror(errno);
         removeSession(session);
         return;
@@ -300,29 +301,29 @@ void EventLoop::runLinux() {
     ev.data.fd = wakeupfd;
     epoll_ctl(epollfd, EPOLL_CTL_ADD, wakeupfd, &ev);
 
-    INK_TRACE << "wakeupfd register: " <<  wakeupfd << " for thread: " << wid;
+    INK_TRACE << "Wakeupfd register: " <<  wakeupfd << " for thread: " << wid;
 
     while (_running) {
         int numEvents = epoll_wait(epollfd, events, MAX_EVENTS, EPOLL_WAIT_TIMEOUT);
 
         if (!_running) break;
 
-        if (numEvents < 0) {
-            if (errno == EINTR) {
-                // Interrupted, just try again
+        if (numEvents < 0)
+        {
+            // Interrupted, just try again
+            if (errno == EINTR)
                 continue;
-            }
 
             INK_ERROR << "epoll_wait error: " << strerror(errno);
             break;
         }
 
         for (int i = 0; i < numEvents; i++) {
-            // Check if this is the wakeup event
-            if (wakeupfd >= 0 && events[i].data.fd == wakeupfd) {
+            if (wakeupfd >= 0 && events[i].data.fd == wakeupfd)
+            {
                 uint64_t value;
                 read(wakeupfd, &value, sizeof(value));
-                INK_TRACE << "wakeup thread: " << wid;
+                INK_TRACE << "Wakeup event thread: " << wid;
                 continue;
             }
 
@@ -340,21 +341,20 @@ void EventLoop::runLinux() {
 
             if (session)
             {
-                if (events[i].events & (EPOLLERR | EPOLLHUP)) {
-                    // Error or hang-up
+                // Error or hang-up
+                if (events[i].events & (EPOLLERR | EPOLLHUP))
+                {
                     session->close();
                     continue;
                 }
 
-                if (events[i].events & EPOLLIN) {
-                    // Socket is readable
+                // Read interest EPOLLIN
+                if (events[i].events & EPOLLIN)
                     session->onReadReady();
-                }
 
-                if (events[i].events & EPOLLOUT) {
-                    // Socket is writable
+                // Write interest EPOLLOUT
+                if (events[i].events & EPOLLOUT)
                     session->onWriteReady();
-                }
             }
         }
     }
@@ -407,7 +407,7 @@ void EventLoop::updateSessionInterestLinux(std::shared_ptr<Session> session, boo
         return;
     }
 
-    INK_DEBUG << "Session interest updated (Linux): read=" << interestedInReading
-              << ", write=" << interestedInWriting;
+    // INK_TRACE << "Session interest updated (Linux): read=" << interestedInReading
+    //           << ", write=" << interestedInWriting;
 }
 #endif

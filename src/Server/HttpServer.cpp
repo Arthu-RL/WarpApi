@@ -162,7 +162,8 @@ void HttpServer::acceptLoop() {
                                        reinterpret_cast<sockaddr*>(&clientAddr),
                                        &clientAddrLen);
 
-        if (clientSocket != SOCKET_ERROR_VALUE) {
+        if (clientSocket != SOCKET_ERROR_VALUE)
+        {
 // Set socket to non-blocking mode
 #ifdef _WIN32
             unsigned long nonBlocking = 1;
@@ -173,7 +174,6 @@ void HttpServer::acceptLoop() {
                 fcntl(clientSocket, F_SETFL, flags | O_NONBLOCK);
             }
 #endif
-
             // Set TCP_NODELAY for client socket too
             int opt = 1;
             setsockopt(clientSocket, IPPROTO_TCP, TCP_NODELAY,
@@ -188,7 +188,9 @@ void HttpServer::acceptLoop() {
             _threadPool.submit([session]() {
                 session->start();
             });
-        } else {
+        }
+        else
+        {
 // Check if error is because we would block (no connections available)
 #ifdef _WIN32
             int error = WSAGetLastError();
@@ -200,7 +202,6 @@ void HttpServer::acceptLoop() {
                 INK_ERROR << "Accept error: " << strerror(errno);
             }
 #endif
-
             // Sleep a bit to avoid busy-waiting
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
@@ -211,8 +212,7 @@ void HttpServer::cleanupIdleConnections() {
     auto timeout = std::chrono::milliseconds(_connectionTimeout);
 
     while (_running) {
-        // Check connections every second
-        std::this_thread::sleep_for(std::chrono::seconds(1));
+        std::this_thread::sleep_for(std::chrono::seconds(3));
 
         for (auto it = _connections.begin(); it != _connections.end();)
         {

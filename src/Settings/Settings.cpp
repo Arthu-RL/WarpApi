@@ -2,7 +2,6 @@
 
 // Static member initialization
 SettingsData Settings::_data;
-std::mutex Settings::_mutex;
 bool Settings::_initialized = false;
 
 bool SettingsData::isValid() const {
@@ -46,24 +45,22 @@ Settings::Settings(const ink::EnhancedJson& configs)
     }
 }
 
-SettingsData Settings::getSettings()
+const SettingsData& Settings::getSettings() noexcept
 {
-    std::lock_guard<std::mutex> lock(_mutex);
-    return _data; // Return a copy for thread safety
+    return _data;
 }
 
-bool Settings::isValid()
+const bool Settings::isValid() noexcept
 {
-    std::lock_guard<std::mutex> lock(_mutex);
     return _data.isValid();
 }
 
 bool Settings::updateSettings(const ink::EnhancedJson& configs)
 {
-    std::lock_guard<std::mutex> lock(_mutex);
     SettingsData newData = _data; // Start with existing settings
 
-    if (loadSettings(configs, newData) && newData.isValid()) {
+    if (loadSettings(configs, newData) && newData.isValid())
+    {
         _data = newData;
         return true;
     }
@@ -81,6 +78,9 @@ bool Settings::loadSettings(const ink::EnhancedJson& configs, SettingsData& data
                                                data.max_threads);
         data.backlog_size = configs.get<size_t>("backlog_size", SOMAXCONN);
         data.connection_timeout_ms = configs.get<size_t>("connection_timeout_ms", 60000);
+        data.max_body_size = configs.get<size_t>("max_body_size", 1 * 1024 * 1024);
+        data.max_request_size = configs.get<size_t>("max_body_size", 1 * 1024 * 1024);
+        data.max_response_size = configs.get<size_t>("max_body_size", 1 * 1024 * 1024);
 
         return true;
     }

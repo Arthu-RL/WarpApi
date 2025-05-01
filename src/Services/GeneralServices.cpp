@@ -25,8 +25,6 @@ void GeneralServices::registerAllEndpoints()
         const auto& body = request.body();
         auto jObj = ink::EnhancedJsonUtils::loadFromString(body);
 
-        INK_DEBUG << jObj.toCompactString();
-
         auto result = ink::EnhancedJson();
 
         for (auto it=params.begin(); it != params.end(); ++it)

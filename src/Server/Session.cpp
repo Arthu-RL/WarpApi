@@ -2,13 +2,14 @@
 #include "Managers/EndpointManager.h"
 #include "Response/HttpResponse.h"
 #include "Utils/RouteIdentifier.h"
+#include "Settings/Settings.h"
 
 Session::Session(socket_t socket, EventLoop* eventLoop) :
     _socket(socket),
     _req(),
     _keepAlive(false),
-    _readBuffer(16384),  // 16KB read buffer
-    _writeBuffer(16384), // 16KB write buffer
+    _readBuffer(Settings::getSettings().max_request_size),
+    _writeBuffer(Settings::getSettings().max_response_size),
     _active(true),
     _readingHeaders(true),
     _writingResponse(false),
@@ -168,47 +169,37 @@ bool Session::parseRequest()
 {
     size_t availableData;
     const char* data = _readBuffer.getReadBuffer(availableData);
-    if (!data || availableData < MIN_REQUEST_SIZE)
-        return false;
+    if (!data || availableData < MIN_REQUEST_SIZE) return false;
 
-    const char* endOfHeaders = nullptr;
-    for (size_t i = 0; i < availableData - 3; i++) {
-        if (data[i] == '\r' && data[i+1] == '\n' &&
-            data[i+2] == '\r' && data[i+3] == '\n') {
-            endOfHeaders = data + i + 4;
-            break;
-        }
-    }
-    if (!endOfHeaders) return false;
+    std::string_view buffer(data, availableData);
 
-    const char* lineEnd = nullptr;
-    for (size_t i = 0; i < availableData - 1; i++) {
-        if (data[i] == '\r' && data[i+1] == '\n') {
-            lineEnd = data + i;
-            break;
-        }
-    }
-    if (!lineEnd) return false;
+    // Find end of headers: "\r\n\r\n"
+    size_t headerEndPos = buffer.find("\r\n\r\n");
+    if (headerEndPos == std::string_view::npos) return false;
+    const char* endOfHeaders = data + headerEndPos + 4;
+
+    // Find end of request line: first "\r\n"
+    size_t lineEndPos = buffer.find("\r\n");
+    if (lineEndPos == std::string_view::npos) return false;
+    const char* lineEnd = data + lineEndPos;
 
     std::string_view requestLine(data, lineEnd - data);
 
     // Find first space (after method)
     size_t methodEnd = requestLine.find(' ');
-    if (methodEnd == std::string_view::npos)
-        return false;
+    if (methodEnd == std::string_view::npos) return false;
 
     // Find second space (after path)
     size_t pathEnd = requestLine.find(' ', methodEnd + 1);
-    if (pathEnd == std::string_view::npos)
-        return false;
+    if (pathEnd == std::string_view::npos) return false;
 
     std::string_view method = requestLine.substr(0, methodEnd);
     std::string_view path = requestLine.substr(methodEnd + 1, pathEnd - methodEnd - 1);
     std::string_view version = requestLine.substr(pathEnd + 1);
 
-    _req.setMethod(HttpRequest::parseMethod(std::string(method)));
-    _req.setPath(std::string(path));
-    _req.setVersion(std::string(version));
+    _req.setMethod(HttpRequest::parseMethod(method));
+    _req.setPath(path);
+    _req.setVersion(version);
 
     // Parse headers in a single pass
     const char* headerStart = lineEnd + 2;
@@ -216,10 +207,13 @@ bool Session::parseRequest()
     std::string_view connectionValue;
     std::string_view contentLengthValue;
 
-    while (headerEnd < endOfHeaders - 2) {
+    while (headerEnd < endOfHeaders - 2)
+    {
         headerEnd = nullptr;
-        for (const char* p = headerStart; p < endOfHeaders - 1; p++) {
-            if (*p == '\r' && *(p+1) == '\n') {
+        for (const char* p = headerStart; p < endOfHeaders - 1; p++)
+        {
+            if (*p == '\r' && *(p+1) == '\n')
+            {
                 headerEnd = p;
                 break;
             }
@@ -232,7 +226,8 @@ bool Session::parseRequest()
             break;
 
         size_t colonPos = headerLine.find(": ");
-        if (colonPos != std::string_view::npos) {
+        if (colonPos != std::string_view::npos)
+        {
             std::string_view key = headerLine.substr(0, colonPos);
             std::string_view value = headerLine.substr(colonPos + 2);
 
@@ -240,11 +235,10 @@ bool Session::parseRequest()
             _req.addHeader(std::string(key), std::string(value));
 
             // Track important headers by direct comparison (avoiding extra lookups)
-            if (key == "Connection") {
+            if (key == "Connection")
                 connectionValue = value;
-            } else if (key == "Content-Length") {
+            else if (key == "Content-Length")
                 contentLengthValue = value;
-            }
         }
         headerStart = headerEnd + 2;
     }
@@ -253,26 +247,33 @@ bool Session::parseRequest()
     _keepAlive = (connectionValue == "keep-alive");
 
     // Process the body if Content-Length is present
-    if (!contentLengthValue.empty()) {
+    if (!contentLengthValue.empty())
+    {
         // Use fast string-to-int conversion avoiding exceptions from std::stoul
         size_t contentLength = 0;
-        for (char c : contentLengthValue) {
+        for (char c : contentLengthValue)
+        {
             if (c >= '0' && c <= '9') {
                 contentLength = contentLength * 10 + (c - '0');
-            } else {
-                // Invalid content length
+            }
+            else {
                 return false;
             }
         }
 
-        size_t headersSize = endOfHeaders - data;
-        if (availableData < headersSize + contentLength) {
-            // Need more data for complete body
+        // guard against overflow for security
+        if (contentLength > Settings::getSettings().max_body_size)
             return false;
-        }
+
+        size_t headersSize = endOfHeaders - data;
+        // There is no BODY
+        if (availableData < headersSize + contentLength)
+            return false;
+
+        std::string_view bodyView(endOfHeaders, contentLength);
 
         // Set body without additional copies
-        _req.setBody(std::string(endOfHeaders, contentLength));
+        _req.setBody(bodyView);
         _readBuffer.advanceReadPos(headersSize + contentLength);
     } else {
         // No Content-Length, assume no body
@@ -288,11 +289,10 @@ void Session::handleRequest()
     response.addHeader("Server", "WarpApi/1.0");
 
     // Set Connection header based on keep-alive
-    if (_keepAlive) {
+    if (_keepAlive)
         response.addHeader("Connection", "keep-alive");
-    } else {
+    else
         response.addHeader("Connection", "close");
-    }
 
     try {
         _req.extractQueryParams();
@@ -313,16 +313,17 @@ void Session::handleRequest()
     // Serialize response to the write buffer
     std::string responseStr = response.toString();
 
-    size_t written = _writeBuffer.write(responseStr.c_str(), responseStr.length());
-
-    if (written < responseStr.length()) {
-        INK_ERROR << "Failed to write complete response to buffer";
-        _keepAlive = false;  // Force connection close on error
-    }
-
     // Start writing the response
     _writingResponse = true;
     _eventLoop->updateSessionInterest(shared_from_this(), false, true);
+
+    size_t written = _writeBuffer.write(responseStr.c_str(), responseStr.length());
+
+    if (written < responseStr.length())
+    {
+        INK_ERROR << "Failed to write complete response to buffer";
+        _keepAlive = false;  // Force connection close on error
+    }
 
     updateActivity();
 }
@@ -338,14 +339,16 @@ void Session::write()
         // No data to write
         _writingResponse = false;
 
-        if (_keepAlive) {
-
+        if (_keepAlive)
+        {
             _eventLoop->updateSessionInterest(shared_from_this(), true, false);
 
             // Reset request state
             _req.reset();
-        } else {
-            // Not keep-alive, close connection
+        }
+        // Not keep-alive, close connection
+        else
+        {
             close();
         }
 
@@ -354,15 +357,17 @@ void Session::write()
 
     int bytesSent = send(_socket, readPtr, availableData, 0);
 
-    if (bytesSent > 0) {
+    if (bytesSent > 0)
+    {
         _writeBuffer.advanceReadPos(bytesSent);
 
         // Check if we've written everything
         if (_writeBuffer.size() > 0) {
             // Still more to write
             _eventLoop->updateSessionInterest(shared_from_this(), false, true);
-
-        } else {
+        }
+        else
+        {
             // All data written
             _writingResponse = false;
 
@@ -371,12 +376,16 @@ void Session::write()
                 _eventLoop->updateSessionInterest(shared_from_this(), true, false);
                 // Reset request for next use
                 _req.reset();
-            } else {
+            }
+            else
+            {
                 // Not keep-alive, close the connection
                 close();
             }
         }
-    } else {
+    }
+    else
+    {
         // Error or would block
         int errorCode =
 #ifdef _WIN32
@@ -384,7 +393,8 @@ void Session::write()
         if (errorCode != WSAEWOULDBLOCK) {
 #else
             errno;
-        if (errorCode != EAGAIN && errorCode != EWOULDBLOCK) {
+        if (errorCode != EAGAIN && errorCode != EWOULDBLOCK)
+        {
 #endif
             INK_ERROR << "Socket write error: " << errorCode;
             close();
