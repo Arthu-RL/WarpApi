@@ -4,9 +4,10 @@
 #pragma once
 
 #include <memory>
-#include <tbb/concurrent_unordered_map.h>
 
 #include "Endpoint/Endpoint.h"
+
+typedef std::unordered_map<std::string, std::shared_ptr<Endpoint>> EndpointTable;
 
 class WARP_API EndpointManager
 {
@@ -21,7 +22,7 @@ public:
     static uint count();
 
 private:
-    static tbb::concurrent_unordered_map<std::string, std::shared_ptr<Endpoint>> _endpoints_map;
+    static EndpointTable _endpoints_map;
 };
 
 #endif // ENDPOINTMANAGER_H

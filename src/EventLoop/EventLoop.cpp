@@ -141,13 +141,15 @@ void EventLoop::addSession(std::shared_ptr<Session> session) {
     }
 #else
 
+    ink_u16 threadIdx = 0;
     {
         std::lock_guard<std::mutex> lock(_addSessionMutex);
 
         _currentThread = (_currentThread+1)%Settings::getSettings().max_threads;
+        threadIdx = _currentThread;
     }
 
-    auto it = std::next(_workerEpollFd.begin(), _currentThread);
+    auto it = std::next(_workerEpollFd.begin(), threadIdx);
 
     struct epoll_event ev;
     ev.events = EPOLLIN | EPOLLET;
@@ -161,9 +163,6 @@ void EventLoop::addSession(std::shared_ptr<Session> session) {
     }
 
     session->setWorkerId(it->first);
-
-    // For Linux epoll, register the socket with EPOLLET (edge-triggered) for better performance
-
 #endif
 
     INK_DEBUG << "Session added to EventLoop";

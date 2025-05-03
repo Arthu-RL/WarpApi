@@ -26,6 +26,9 @@ Session::~Session()
 
 void Session::start()
 {
+    // Do some socket optimizations
+    if (!setSocketOptimizations())
+        INK_ERROR << "Coulnd't do socket optimizations.";
     // Register with event loop
     _eventLoop->addSession(shared_from_this());
     // Register interest in reading
@@ -48,15 +51,24 @@ void Session::close()
     }
 }
 
-bool Session::setNonBlocking()
+bool Session::setSocketOptimizations()
 {
+    // Set TCP_NODELAY for client socket too
+    int opt = 1;
+    int tcp_nodelay_result = setsockopt(_socket, IPPROTO_TCP, TCP_NODELAY,
+                                        reinterpret_cast<const char*>(&opt), sizeof(opt));
+
+    // Set socket to non-blocking mode
 #ifdef _WIN32
     unsigned long nonBlocking = 1;
-    return ioctlsocket(_socket, FIONBIO, &nonBlocking) == 0;
+    int non_blocking_result = ioctlsocket(_socket, FIONBIO, &nonBlocking) == 0;
+    return tcp_nodelay_result != -1 && non_blocking_result != -1;
 #else
     int flags = fcntl(_socket, F_GETFL, 0);
-    if (flags == -1) return false;
-    return fcntl(_socket, F_SETFL, flags | O_NONBLOCK) != -1;
+    int non_blocking_result = -1;
+    if (flags != -1)
+        non_blocking_result = fcntl(_socket, F_SETFL, flags | O_NONBLOCK) != -1;
+    return tcp_nodelay_result!= -1 && non_blocking_result != -1;
 #endif
 }
 

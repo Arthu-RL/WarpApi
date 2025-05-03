@@ -8,7 +8,7 @@
 struct WARP_API HttpResponseData {
     HttpResponseData() :
         status(StatusCode::ok),
-        version("HTTP/2.0"),
+        version(""),
         headers({}),
         body("") {}
 

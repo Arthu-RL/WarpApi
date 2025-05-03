@@ -164,21 +164,6 @@ void HttpServer::acceptLoop() {
 
         if (clientSocket != SOCKET_ERROR_VALUE)
         {
-// Set socket to non-blocking mode
-#ifdef _WIN32
-            unsigned long nonBlocking = 1;
-            ioctlsocket(clientSocket, FIONBIO, &nonBlocking);
-#else
-            int flags = fcntl(clientSocket, F_GETFL, 0);
-            if (flags != -1) {
-                fcntl(clientSocket, F_SETFL, flags | O_NONBLOCK);
-            }
-#endif
-            // Set TCP_NODELAY for client socket too
-            int opt = 1;
-            setsockopt(clientSocket, IPPROTO_TCP, TCP_NODELAY,
-                       reinterpret_cast<const char*>(&opt), sizeof(opt));
-
             // Create a session with the EventLoop
             auto session = std::make_shared<Session>(clientSocket, _eventLoop.get());
 

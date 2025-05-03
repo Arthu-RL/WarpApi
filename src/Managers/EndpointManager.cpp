@@ -1,6 +1,6 @@
 #include "EndpointManager.h"
 
-tbb::concurrent_unordered_map<std::string, std::shared_ptr<Endpoint>> EndpointManager::_endpoints_map;
+EndpointTable EndpointManager::_endpoints_map;
 
 void EndpointManager::registerEndpoint(std::shared_ptr<Endpoint> endpoint)
 {

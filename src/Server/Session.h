@@ -17,7 +17,7 @@ public:
     void start();
     void close();
     const bool isActive() const noexcept;
-    bool setNonBlocking();
+    bool setSocketOptimizations();
 
     // Methods needed for EventLoop integration
     socket_t getSocket() const;
