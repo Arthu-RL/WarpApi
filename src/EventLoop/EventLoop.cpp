@@ -2,7 +2,28 @@
 #include "Server/Session.h"
 #include "Settings/Settings.h"
 
-ink_u16 EventLoop::_currentThread = 0;
+/**
+ * Notes for Windows implementation:
+ *
+ * 1. Replace epoll with IOCP (I/O Completion Ports)
+ *    - Use CreateIoCompletionPort(), GetQueuedCompletionStatus()
+ *    - Use OVERLAPPED structure for asynchronous I/O
+ *
+ * 2. Replace socket functions with Winsock equivalents
+ *    - Use WSASocket(), WSASend(), WSARecv()
+ *    - Call WSAStartup() in initialization
+ *
+ * 3. Error handling
+ *    - Replace errno with WSAGetLastError()
+ *    - Replace EAGAIN/EWOULDBLOCK with WSAEWOULDBLOCK
+ *
+ * 4. Replace sendfile() with TransmitFile()
+ *
+ * 5. Replace fcntl() with ioctlsocket()
+ *    - Use ioctlsocket() with FIONBIO to set non-blocking mode
+ */
+
+u16 EventLoop::_currentThread = 0;
 
 EventLoop::EventLoop() :
     _running(false),
@@ -141,7 +162,7 @@ void EventLoop::addSession(std::shared_ptr<Session> session) {
     }
 #else
 
-    ink_u16 threadIdx = 0;
+    u16 threadIdx = 0;
     {
         std::lock_guard<std::mutex> lock(_addSessionMutex);
 

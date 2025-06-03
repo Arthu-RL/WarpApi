@@ -8,7 +8,7 @@ project(WarpApi
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
+set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -Wall -Wextra")
 set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static-libstdc++ -static-libgcc")
 
 # Add library paths
@@ -35,6 +35,16 @@ file(GLOB_RECURSE SOURCES
 add_executable(${PROJECT_NAME}
     ${SOURCES}
 )
+
+# Compiler flags
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(${PROJECT_NAME} PRIVATE -g -O0)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+else()
+    target_compile_options(${PROJECT_NAME} PRIVATE -O3 -DNDEBUG)
+endif()
 
 set(APP_CONFIGS "${CMAKE_SOURCE_DIR}/config.json")
 set(APP_CONFIGS_DEST "${CMAKE_BINARY_DIR}")

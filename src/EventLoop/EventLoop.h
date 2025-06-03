@@ -48,8 +48,8 @@ private:
     void updateSessionInterestWindows(std::shared_ptr<Session> session, bool interestedInReading, bool interestedInWriting);
 #else
     // Linux-specific implementation
-    std::unordered_map<std::thread::id, ink_i32> _workerEpollFd;
-    std::unordered_map<std::thread::id, ink_i32> _workerWakeupFd;
+    std::unordered_map<std::thread::id, i32> _workerEpollFd;
+    std::unordered_map<std::thread::id, i32> _workerWakeupFd;
 
     // Helper methods
     void runLinux();
@@ -60,9 +60,9 @@ private:
     SessionTable _sessions;
 
     std::vector<std::thread> _threads;
-    std::atomic<ink_bool> _running;
+    std::atomic<bool> _running;
 
-    static ink_u16 _currentThread;
+    static u16 _currentThread;
     std::mutex _addSessionMutex;
 };
 

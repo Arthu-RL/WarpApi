@@ -8,9 +8,9 @@ Session::Session(socket_t socket, EventLoop* eventLoop) :
     _socket(socket),
     _req(),
     _keepAlive(false),
+    _active(true),
     _readBuffer(Settings::getSettings().max_request_size),
     _writeBuffer(Settings::getSettings().max_response_size),
-    _active(true),
     _readingHeaders(true),
     _writingResponse(false),
     _eventLoop(eventLoop)
@@ -82,7 +82,7 @@ void Session::setWorkerId(std::thread::id workerId) noexcept
     _workerId = workerId;
 }
 
-const bool Session::isActive() const noexcept
+bool Session::isActive() const noexcept
 {
     return _active;
 }

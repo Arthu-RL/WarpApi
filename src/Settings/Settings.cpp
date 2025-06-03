@@ -50,7 +50,7 @@ const SettingsData& Settings::getSettings() noexcept
     return _data;
 }
 
-const bool Settings::isValid() noexcept
+bool Settings::isValid() noexcept
 {
     return _data.isValid();
 }

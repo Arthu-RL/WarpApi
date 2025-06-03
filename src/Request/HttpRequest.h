@@ -58,7 +58,7 @@ public:
         return UNKNOWN;
     }
 
-    const Method method() const noexcept
+    Method method() const noexcept
     {
         return _data.method;
     }
@@ -103,7 +103,7 @@ public:
         _data.headers[key] = value;
     }
 
-    const bool hasHeader(const std::string& key) const noexcept
+    bool hasHeader(const std::string& key) const noexcept
     {
         return _data.headers.find(key) != _data.headers.end();
     }

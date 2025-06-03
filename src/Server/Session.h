@@ -16,7 +16,7 @@ public:
 
     void start();
     void close();
-    const bool isActive() const noexcept;
+    bool isActive() const noexcept;
     bool setSocketOptimizations();
 
     // Methods needed for EventLoop integration

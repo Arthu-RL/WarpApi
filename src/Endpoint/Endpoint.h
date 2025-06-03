@@ -34,7 +34,7 @@ public:
         return _route;
     };
 
-    const bool isValid() const
+    bool isValid() const
     {
         return _route != "";
     }

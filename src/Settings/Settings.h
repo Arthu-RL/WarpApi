@@ -34,7 +34,7 @@ public:
     static const SettingsData& getSettings() noexcept;
 
     // Check if current settings are valid
-    static const bool isValid() noexcept;
+    static bool isValid() noexcept;
 
     // Update settings (thread-safe)
     static bool updateSettings(const ink::EnhancedJson& configs);
