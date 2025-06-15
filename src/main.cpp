@@ -25,8 +25,9 @@ void signalHandler(int signal) {
 int main(int argc, char** argv)
 {
     // Initialize logger
-    INK_CORE_LOGGER;
+    INK_CORE_LOGGER->setName("WarpAPI");
     ink::LogManager::getInstance().setGlobalLevel(logSeverity);
+
     INK_INFO << "Starting WarpAPI server...";
 
     // Load configuration

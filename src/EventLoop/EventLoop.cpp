@@ -26,9 +26,9 @@
 u16 EventLoop::_currentThread = 0;
 
 EventLoop::EventLoop() :
-    _running(false),
     _workerEpollFd({}),
-    _workerWakeupFd({})
+    _workerWakeupFd({}),
+    _running(false)
 {
     // Empty
 }
@@ -70,7 +70,7 @@ void EventLoop::start() {
         _threads.emplace_back(&EventLoop::run, this);
 
 #else
-    for (int i = 0; i < max_threads; i++) {
+    for (uint i = 0; i < max_threads; i++) {
         _threads.emplace_back(&EventLoop::run, this);
 
         // Initialize Linux epoll with a large size hint
