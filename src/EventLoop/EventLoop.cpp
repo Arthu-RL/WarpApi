@@ -3,7 +3,9 @@
 #include "Settings/Settings.h"
 
 /**
- * Notes for Windows implementation:
+ * For Windows implementation:
+ *
+ * @note Windows implementation is incomplete, and not tested, here are some instructions
  *
  * 1. Replace epoll with IOCP (I/O Completion Ports)
  *    - Use CreateIoCompletionPort(), GetQueuedCompletionStatus()
@@ -21,6 +23,8 @@
  *
  * 5. Replace fcntl() with ioctlsocket()
  *    - Use ioctlsocket() with FIONBIO to set non-blocking mode
+ *
+ * 6. Try to use something similar as _workerEpollFd and _workerWakeupFd in this implementation
  */
 
 u16 EventLoop::_currentThread = 0;
@@ -66,11 +70,11 @@ void EventLoop::start() {
         throw std::runtime_error("Failed to create I/O completion port");
     }
 
-    for (int i = 0; i < max_threads; i++) {
+    for (u32 i = 0; i < max_threads; i++) {
         _threads.emplace_back(&EventLoop::run, this);
 
 #else
-    for (uint i = 0; i < max_threads; i++) {
+    for (u32 i = 0; i < max_threads; i++) {
         _threads.emplace_back(&EventLoop::run, this);
 
         // Initialize Linux epoll with a large size hint
