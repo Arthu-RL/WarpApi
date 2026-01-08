@@ -1,4 +1,8 @@
 #include "Session.h"
+
+#include <ink/LastWish.h>
+#include <ink/utils.h>
+
 #include "Managers/EndpointManager.h"
 #include "Response/HttpResponse.h"
 #include "Utils/RouteIdentifier.h"
@@ -40,8 +44,6 @@ void Session::close()
     if (_active)
     {
         _active = false;
-
-        _eventLoop->removeSession(shared_from_this());
 
 #ifdef _WIN32
         closesocket(_socket);
@@ -262,16 +264,7 @@ bool Session::parseRequest()
     if (!contentLengthValue.empty())
     {
         // Use fast string-to-int conversion avoiding exceptions from std::stoul
-        size_t contentLength = 0;
-        for (char c : contentLengthValue)
-        {
-            if (c >= '0' && c <= '9') {
-                contentLength = contentLength * 10 + (c - '0');
-            }
-            else {
-                return false;
-            }
-        }
+        size_t contentLength = ink::utils::string_int(contentLengthValue);
 
         // guard against overflow for security
         if (contentLength > Settings::getSettings().max_body_size)
@@ -336,6 +329,8 @@ void Session::handleRequest()
         INK_ERROR << "Failed to write complete response to buffer";
         _keepAlive = false;  // Force connection close on error
     }
+
+    INK_LOG <<  responseStr;
 
     updateActivity();
 }

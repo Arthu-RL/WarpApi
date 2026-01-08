@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION $ENV{CMAKE_VERSION})
+cmake_minimum_required(VERSION 3.16)
 
 project(WarpApi
     LANGUAGES CXX

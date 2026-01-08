@@ -133,16 +133,16 @@ public:
 
     void extractQueryParams()
     {
-        std::string target = _data.path;
+        std::string_view target = _data.path;
 
         size_t queryStart = target.find('?');
         if (queryStart == std::string::npos)
             return;
 
-        std::string query = target.substr(queryStart+1);
+        std::string_view query = target.substr(queryStart+1);
 
         std::string key, value;
-        std::istringstream queryStream(query);
+        std::istringstream queryStream(query.data());
         while (std::getline(queryStream, key, '&'))
         {
             std::size_t equalPos = key.find('=');

@@ -4,7 +4,7 @@
 
 Conversions::Conversions() {}
 
-const std::string Conversions::urlEncode(const std::string& input)
+const std::string Conversions::urlEncode(const std::string_view input)
 {
     std::ostringstream encoded;
 
@@ -23,7 +23,7 @@ const std::string Conversions::urlEncode(const std::string& input)
     return encoded.str();
 }
 
-const std::string Conversions::urlDecode(const std::string& input)
+const std::string Conversions::urlDecode(const std::string_view input)
 {
     std::string decoded;
 
@@ -31,9 +31,8 @@ const std::string Conversions::urlDecode(const std::string& input)
     {
         if (input[i] == '%')
         {
-            std::string hexValue = input.substr(i + 1, 2);
-            const char decodedChar = static_cast<char>(std::stoi(hexValue, nullptr, 16));
-            decoded += decodedChar;
+            std::string_view hexValue = input.substr(i + 1, 2);
+            decoded += static_cast<char>(std::stoi(hexValue.data(), nullptr, 16));
             i += 2;
         }
         else if (input[i] == '+')

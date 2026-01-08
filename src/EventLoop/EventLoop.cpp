@@ -1,6 +1,7 @@
 #include "EventLoop.h"
 #include "Server/Session.h"
 #include "Settings/Settings.h"
+#include "Managers/SessionManagerWorker.h"
 
 /**
  * For Windows implementation:
@@ -136,8 +137,6 @@ void EventLoop::addSession(std::shared_ptr<Session> session) {
 
     socket_t sockfd = session->getSocket();
 
-    _sessions[sockfd] = session;
-
 #ifdef _WIN32
     // Associate socket with completion port
     if (CreateIoCompletionPort((HANDLE)sockfd, _completionPort, (ULONG_PTR)sockfd, 0) == NULL) {
@@ -183,8 +182,19 @@ void EventLoop::addSession(std::shared_ptr<Session> session) {
     if (epoll_ctl(it->second, EPOLL_CTL_ADD, sockfd, &ev) < 0)
     {
         INK_ERROR << "Failed to add socket to epoll: " << strerror(errno);
-        removeSession(session);
+#ifdef _WIN32
+        // For Windows, IOCP operations should be canceled
+        // CancelIoEx is preferred, but requires Vista+
+        CancelIoEx((HANDLE)sockfd, NULL);
+#else
+        // Remove from epoll
+        epoll_ctl(_workerEpollFd[session->getWorkerId()], EPOLL_CTL_DEL, sockfd, nullptr);
+#endif
         return;
+    }
+    else
+    {
+        SessionManagerWorker::getInstance()->addClientSession(sockfd, session);
     }
 
     session->setWorkerId(it->first);
@@ -201,25 +211,6 @@ void EventLoop::updateSessionInterest(std::shared_ptr<Session> session, bool int
 #else
     updateSessionInterestLinux(session, interestedInReading, interestedInWriting);
 #endif
-}
-
-void EventLoop::removeSession(std::shared_ptr<Session> session) {
-    if (!session) return;
-
-    socket_t sockfd = session->getSocket();
-
-    _sessions.unsafe_erase(sockfd);
-
-#ifdef _WIN32
-    // For Windows, IOCP operations should be canceled
-    // CancelIoEx is preferred, but requires Vista+
-    CancelIoEx((HANDLE)sockfd, NULL);
-#else
-    // Remove from epoll
-    epoll_ctl(_workerEpollFd[session->getWorkerId()], EPOLL_CTL_DEL, sockfd, nullptr);
-#endif
-
-    INK_DEBUG << "Session removed from EventLoop";
 }
 
 void EventLoop::run() {
@@ -325,6 +316,8 @@ void EventLoop::runLinux() {
     ev.data.fd = wakeupfd;
     epoll_ctl(epollfd, EPOLL_CTL_ADD, wakeupfd, &ev);
 
+    SessionManagerWorker* sessionWorker = SessionManagerWorker::getInstance();
+
     INK_TRACE << "Wakeupfd register: " <<  wakeupfd << " for thread: " << wid;
 
     while (_running) {
@@ -342,7 +335,8 @@ void EventLoop::runLinux() {
             break;
         }
 
-        for (int i = 0; i < numEvents; i++) {
+        for (int i = 0; i < numEvents; i++)
+        {
             if (wakeupfd >= 0 && events[i].data.fd == wakeupfd)
             {
                 uint64_t value;
@@ -353,15 +347,7 @@ void EventLoop::runLinux() {
 
             socket_t sockfd = events[i].data.fd;
 
-            std::shared_ptr<Session> session;
-            auto it = _sessions.find(sockfd);
-            if (it != _sessions.end()) {
-                session = it->second;
-            }
-            else
-            {
-                session = nullptr;
-            }
+            std::shared_ptr<Session> session = sessionWorker->getSession(sockfd);
 
             if (session)
             {

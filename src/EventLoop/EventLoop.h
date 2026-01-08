@@ -21,7 +21,6 @@ public:
     // Session management
     void addSession(std::shared_ptr<Session> session);
     void updateSessionInterest(std::shared_ptr<Session> session, bool interestedInReading, bool interestedInWriting);
-    void removeSession(std::shared_ptr<Session> session);
 
 private:
     // Event loop thread function
@@ -55,10 +54,6 @@ private:
     void runLinux();
     void updateSessionInterestLinux(std::shared_ptr<Session> session, bool interestedInReading, bool interestedInWriting);
 #endif
-
-    // Session tracking with thread safety
-    SessionTable _sessions;
-
     std::vector<std::thread> _threads;
     std::atomic<bool> _running;
 

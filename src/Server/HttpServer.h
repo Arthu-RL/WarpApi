@@ -3,8 +3,8 @@
 
 #pragma once
 
-#include "WarpDefs.h"
 #include "EventLoop/EventLoop.h"
+#include "Managers/SessionManagerWorker.h"
 
 class WARP_API HttpServer {
 public:
@@ -23,19 +23,16 @@ public:
 
 private:
     void acceptLoop();
-    void cleanupIdleConnections();
+
 
     uint16_t _port;
     socket_t _serverSocket;
 
-    std::thread _cleanupThread;
     std::atomic<bool> _running;
     ink::ThreadPool _threadPool;
 
     // EventLoop for I/O multiplexing
     std::unique_ptr<EventLoop> _eventLoop;
-
-    SessionTable _connections;
 
     // Configuration
     size_t _backlogSize;

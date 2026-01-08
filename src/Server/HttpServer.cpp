@@ -63,7 +63,7 @@ void HttpServer::start()
     }
 
     // Set socket buffer sizes for performance
-    int bufSize = 1024 * 64; // 64kb buffer
+    int bufSize = 1024 * 128; // 128kb buffer
     if (setsockopt(_serverSocket, SOL_SOCKET, SO_RCVBUF,
                    reinterpret_cast<const char*>(&bufSize), sizeof(bufSize)) < 0) {
         INK_WARN << "Failed to set receive buffer size";
@@ -107,8 +107,9 @@ void HttpServer::start()
     _eventLoop->start();
 
     // Start connection cleanup timer if timeout is enabled
-    if (_connectionTimeout > 0) {
-        _cleanupThread = std::thread(&HttpServer::cleanupIdleConnections, this);
+    if (!SessionManagerWorker::getInstance()->isRunning())
+    {
+        SessionManagerWorker::getInstance()->start();
     }
 
     auto settings = Settings::getSettings();
@@ -118,7 +119,6 @@ void HttpServer::start()
     INK_DEBUG << "Connection timeout: " << settings.connection_timeout_ms << "ms";
 
     _running = true;
-    // _serverThread = std::thread(&HttpServer::acceptLoop, this);
     acceptLoop(); // Using the main thread
 }
 
@@ -142,18 +142,16 @@ void HttpServer::stop()
     close(_serverSocket);
 #endif
 
-    // if (_serverThread.joinable()) {
-    //     _serverThread.join();
-    // }
-
-    if (_cleanupThread.joinable()) {
-        _cleanupThread.join();
+    if (SessionManagerWorker::getInstance()->isRunning())
+    {
+        SessionManagerWorker::getInstance()->stop();
     }
 
     INK_INFO << "Server stopped";
 }
 
 void HttpServer::acceptLoop() {
+    auto* sessionManager = SessionManagerWorker::getInstance();
     while (_running) {
         sockaddr_in clientAddr;
         socklen_t clientAddrLen = sizeof(clientAddr);
@@ -167,7 +165,7 @@ void HttpServer::acceptLoop() {
             // Create a session with the EventLoop
             auto session = std::make_shared<Session>(clientSocket, _eventLoop.get());
 
-            _connections[clientSocket] = session;
+            sessionManager->addClientSession(clientSocket, session);
 
             // Process the connection in the thread pool
             _threadPool.submit([session]() {
@@ -193,28 +191,8 @@ void HttpServer::acceptLoop() {
     }
 }
 
-void HttpServer::cleanupIdleConnections() {
-    auto timeout = std::chrono::milliseconds(_connectionTimeout);
-
-    while (_running) {
-        std::this_thread::sleep_for(std::chrono::seconds(3));
-
-        for (auto it = _connections.begin(); it != _connections.end();)
-        {
-            if (it->second->isIdle(timeout)) {
-                it->second->close();
-                it = _connections.unsafe_erase(it);
-            } else {
-                ++it;
-            }
-        }
-    }
-}
-
 void HttpServer::setBacklogSize(int size) {
     _backlogSize = size;
 }
 
-void HttpServer::setConnectionTimeout(int milliseconds) {
-    _connectionTimeout = milliseconds;
-}
+

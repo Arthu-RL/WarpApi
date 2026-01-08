@@ -5,6 +5,12 @@ SettingsData Settings::_data;
 bool Settings::_initialized = false;
 
 bool SettingsData::isValid() const {
+    // Check port is within valid range
+    if (port < 1 || port > 65535) {
+        INK_ERROR << "Invalid port number: " << port;
+        return false;
+    }
+
     // Check IP format (basic validation)
     if (ip.empty()) {
         INK_ERROR << "IP address cannot be empty";
