@@ -5,7 +5,6 @@
 
 #include "EventLoop/EventLoop.h"
 #include "Managers/EndpointManager.h"
-#include "Managers/SessionManagerWorker.h"
 #include "Response/HttpResponse.h"
 #include "Utils/RouteIdentifier.h"
 #include "Settings/Settings.h"
@@ -39,10 +38,6 @@ void Session::close()
 {
     socket_t fd = _socket.exchange(SOCKET_ERROR_VALUE);
     if (fd == SOCKET_ERROR_VALUE) return;
-    // if (SessionManagerWorker::getInstance()->getSessionTableSize() > 4096)
-    // {
-    //     SessionManagerWorker::getInstance()->wake();
-    // }
     ::close(fd);
 }
 
