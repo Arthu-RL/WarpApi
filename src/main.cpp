@@ -52,12 +52,11 @@ int main(int argc, char** argv)
         INK_INFO << "Registered endpoints: " << endpointManager.count();
 
         // Create and configure the server
-        HttpServer server(settings.port, settings.max_auxiliar_threads, settings.connection_timeout_ms, settings.backlog_size);
+        HttpServer server(settings.port, settings.connection_timeout_ms, settings.backlog_size);
         g_server = &server;
 
         // Configure server parameters
         server.setBacklogSize(settings.backlog_size);
-        server.setConnectionTimeout(settings.connection_timeout_ms);
 
         // Set up signal handlers for graceful shutdown
         std::signal(SIGINT, signalHandler);

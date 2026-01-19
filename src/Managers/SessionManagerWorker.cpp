@@ -4,7 +4,7 @@
 #include "Settings/Settings.h"
 
 SessionManagerWorker::SessionManagerWorker(size_t cleanup_delay_secs) :
-    ink::WorkerThread(ink::WorkerThread::Policy::KillImediately, cleanup_delay_secs),
+    ink::WorkerThread(ink::WorkerThread::Policy::WaitProcessFinish, cleanup_delay_secs),
     _connectionTimeoutMs(Settings::getSettings().connection_timeout_ms)
 {
     // Empty
@@ -27,10 +27,20 @@ std::shared_ptr<Session> SessionManagerWorker::getSession(socket_t client_sock_f
     return it->second;
 }
 
+size_t SessionManagerWorker::getSessionTableSize() noexcept
+{
+    return _connections.size();
+}
+
 void SessionManagerWorker::addClientSession(socket_t client_sock_fd, std::shared_ptr<Session> session) noexcept
 {
     _connections[client_sock_fd] = session;
 }
+
+// void SessionManagerWorker::removeSession(socket_t client_sock_fd) noexcept
+// {
+//     _connections.unsafe_erase(client_sock_fd);
+// }
 
 void SessionManagerWorker::setConnectionTimeout(size_t connection_timeout_ms) noexcept
 {
@@ -39,20 +49,23 @@ void SessionManagerWorker::setConnectionTimeout(size_t connection_timeout_ms) no
 
 void SessionManagerWorker::process()
 {
-    auto timeout = std::chrono::milliseconds(_connectionTimeoutMs);
+    static auto timeout = std::chrono::milliseconds(_connectionTimeoutMs);
+    std::vector<socket_t> timedOutSockets;
 
-    for (auto it = _connections.begin(); it != _connections.end();)
+    for (auto it = _connections.begin(); it != _connections.end(); ++it)
     {
-        if (it->second->isIdle(timeout)) {
-            it->second->close();
-            it = _connections.unsafe_erase(it);
+        if (it->second->getSocket() == SOCKET_ERROR_VALUE || it->second->isIdle(timeout)) {
+            timedOutSockets.push_back(it->first);
         }
-        else if (!it->second->isActive())
+    }
+
+    for (socket_t sock : timedOutSockets)
+    {
+        auto it = _connections.find(sock);
+        if (it != _connections.end())
         {
-            it = _connections.unsafe_erase(it);
-        }
-        else {
-            ++it;
+            it->second->close();
+            _connections.unsafe_erase(it);
         }
     }
 }

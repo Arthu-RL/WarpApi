@@ -7,7 +7,6 @@
 
 #include "WarpDefs.h"
 #include "Request/HttpRequest.h"
-#include "EventLoop/EventLoop.h"
 
 class WARP_API Session : public std::enable_shared_from_this<Session> {
 public:
@@ -16,8 +15,7 @@ public:
 
     void start();
     void close();
-    bool isActive() const noexcept;
-    bool setSocketOptimizations();
+    void setSocketOptimizations();
 
     // Methods needed for EventLoop integration
     socket_t getSocket() const;
@@ -27,20 +25,20 @@ public:
     void updateActivity();
     bool isIdle(std::chrono::milliseconds timeout) const noexcept;
 
-    std::thread::id getWorkerId() const noexcept;
-    void setWorkerId(std::thread::id workerId) noexcept;
+    socket_t getAssignedEpollFd() const noexcept;
+    void setAssignedEpollFd(socket_t fd) noexcept;
 
 private:
     void read();
     void write();
     bool parseRequest();
     void handleRequest();
+    void onWriteComplete();
 
-    socket_t _socket;
+    std::atomic<socket_t> _socket;
     HttpRequest _req;
     bool _keepAlive;
 
-    std::atomic<bool> _active;
     std::atomic<std::chrono::steady_clock::time_point> _lastActivity;
 
     // Use RingBuffer for efficient I/O
@@ -48,13 +46,12 @@ private:
     ink::RingBuffer _writeBuffer;
 
     // Request/response state tracking
-    bool _readingHeaders;
     bool _writingResponse;
 
     // Reference to the event loop for async I/O
     EventLoop* _eventLoop;
 
-    std::thread::id _workerId;
+    socket_t _assignedEpollFd = -1;
 };
 
 #endif // SESSION_H

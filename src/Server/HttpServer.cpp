@@ -1,13 +1,13 @@
 #include "HttpServer.h"
+
 #include "Server/Session.h"
 #include "Settings/Settings.h"
+#include "Managers/SessionManagerWorker.h"
 
 HttpServer::HttpServer(uint16_t port,
-                       size_t numThreads,
                        size_t connection_timeout_ms,
                        size_t backlog_size)
     : _port(port),
-    _threadPool(numThreads),
     _running(false),
     _eventLoop(std::make_unique<EventLoop>()),
     _backlogSize(backlog_size),
@@ -23,8 +23,6 @@ HttpServer::HttpServer(uint16_t port,
 
     INK_ASSERT_MSG(Settings::isValid(), "Settings not initialized!");
     INK_ASSERT_MSG(_eventLoop != nullptr, "EventLoop is NULL!");
-
-    INK_INFO << "HTTP Server created with " << numThreads << " worker threads";
 }
 
 HttpServer::~HttpServer()
@@ -152,6 +150,16 @@ void HttpServer::stop()
 
 void HttpServer::acceptLoop() {
     auto* sessionManager = SessionManagerWorker::getInstance();
+
+    // Increase file desc limit to accept
+    struct rlimit limit;
+    if (getrlimit(RLIMIT_NOFILE, &limit) == 0)
+    {
+        limit.rlim_cur = limit.rlim_max;
+        setrlimit(RLIMIT_NOFILE, &limit);
+        INK_INFO << "File Descriptor Limit raised to: " << limit.rlim_cur;
+    }
+
     while (_running) {
         sockaddr_in clientAddr;
         socklen_t clientAddrLen = sizeof(clientAddr);
@@ -160,34 +168,25 @@ void HttpServer::acceptLoop() {
                                        reinterpret_cast<sockaddr*>(&clientAddr),
                                        &clientAddrLen);
 
-        if (clientSocket != SOCKET_ERROR_VALUE)
+        if (clientSocket == SOCKET_ERROR_VALUE)
         {
-            // Create a session with the EventLoop
-            auto session = std::make_shared<Session>(clientSocket, _eventLoop.get());
-
-            sessionManager->addClientSession(clientSocket, session);
-
-            // Process the connection in the thread pool
-            _threadPool.submit([session]() {
-                session->start();
-            });
-        }
-        else
-        {
-// Check if error is because we would block (no connections available)
-#ifdef _WIN32
-            int error = WSAGetLastError();
-            if (error != WSAEWOULDBLOCK) {
-                INK_ERROR << "Accept error: " << error;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // Sleep a bit to avoid busy-waiting
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                continue;
             }
-#else
-            if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                INK_ERROR << "Accept error: " << strerror(errno);
-            }
-#endif
-            // Sleep a bit to avoid busy-waiting
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+
+            INK_ERROR << "Accept error: " << strerror(errno);
+            break;
         }
+
+        // Create a session with the EventLoop
+        auto session = std::make_shared<Session>(clientSocket, _eventLoop.get());
+        sessionManager->addClientSession(clientSocket, session);
+
+        INK_TRACE << "New Connection: " << clientSocket;
+
+        session->start();
     }
 }
 

@@ -10,7 +10,6 @@ struct WARP_API SettingsData {
     uint16_t port;
     std::string ip;
     uint max_threads;
-    uint max_auxiliar_threads;
     size_t backlog_size;
     size_t connection_timeout_ms;
     size_t max_body_size;

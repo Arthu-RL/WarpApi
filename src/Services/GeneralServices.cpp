@@ -60,6 +60,13 @@ void GeneralServices::registerAllEndpoints()
         response.setBody(obj.toPrettyString());
     });
 
+    registerEndpoint("/apibenchmark", Method::POST,
+                     [&](const HttpRequest& request, HttpResponse& response)
+    {
+        const auto& body = request.body();
+        response.setBody(body);
+    });
+
     registerEndpoint("/version", Method::GET,
                      [&](const HttpRequest& request, HttpResponse& response)
     {

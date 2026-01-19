@@ -3,7 +3,9 @@
 #include <ink/LastWish.h>
 #include <ink/utils.h>
 
+#include "EventLoop/EventLoop.h"
 #include "Managers/EndpointManager.h"
+#include "Managers/SessionManagerWorker.h"
 #include "Response/HttpResponse.h"
 #include "Utils/RouteIdentifier.h"
 #include "Settings/Settings.h"
@@ -12,81 +14,57 @@ Session::Session(socket_t socket, EventLoop* eventLoop) :
     _socket(socket),
     _req(),
     _keepAlive(false),
-    _active(true),
     _readBuffer(Settings::getSettings().max_request_size),
     _writeBuffer(Settings::getSettings().max_response_size),
-    _readingHeaders(true),
     _writingResponse(false),
     _eventLoop(eventLoop)
 {
-    INK_DEBUG << "Session Created!";
+    // Empty
 }
 
 Session::~Session()
 {
     close();
-    INK_DEBUG << "Session Closed!";
 }
 
 void Session::start()
 {
     // Do some socket optimizations
-    if (!setSocketOptimizations())
-        INK_ERROR << "Coulnd't do socket optimizations.";
+    setSocketOptimizations();
     // Register with event loop
     _eventLoop->addSession(shared_from_this());
-    // Register interest in reading
-    _eventLoop->updateSessionInterest(shared_from_this(), true, false);
 }
 
 void Session::close()
 {
-    if (_active)
-    {
-        _active = false;
-
-#ifdef _WIN32
-        closesocket(_socket);
-#else
-        ::close(_socket);
-#endif
-    }
+    socket_t fd = _socket.exchange(SOCKET_ERROR_VALUE);
+    if (fd == SOCKET_ERROR_VALUE) return;
+    // if (SessionManagerWorker::getInstance()->getSessionTableSize() > 4096)
+    // {
+    //     SessionManagerWorker::getInstance()->wake();
+    // }
+    ::close(fd);
 }
 
-bool Session::setSocketOptimizations()
+void Session::setSocketOptimizations()
 {
-    // Set TCP_NODELAY for client socket too
-    int opt = 1;
-    int tcp_nodelay_result = setsockopt(_socket, IPPROTO_TCP, TCP_NODELAY,
-                                        reinterpret_cast<const char*>(&opt), sizeof(opt));
+    // // Set TCP_NODELAY for client socket too
+    // int opt = 1;
+    // setsockopt(_socket, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&opt), sizeof(opt));
 
     // Set socket to non-blocking mode
-#ifdef _WIN32
-    unsigned long nonBlocking = 1;
-    int non_blocking_result = ioctlsocket(_socket, FIONBIO, &nonBlocking) == 0;
-    return tcp_nodelay_result != -1 && non_blocking_result != -1;
-#else
     int flags = fcntl(_socket, F_GETFL, 0);
-    int non_blocking_result = -1;
-    if (flags != -1)
-        non_blocking_result = fcntl(_socket, F_SETFL, flags | O_NONBLOCK) != -1;
-    return tcp_nodelay_result!= -1 && non_blocking_result != -1;
-#endif
+    fcntl(_socket, F_SETFL, flags | O_NONBLOCK);
 }
 
-std::thread::id Session::getWorkerId() const noexcept
+socket_t Session::getAssignedEpollFd() const noexcept
 {
-    return _workerId;
+    return _assignedEpollFd;
 }
 
-void Session::setWorkerId(std::thread::id workerId) noexcept
+void Session::setAssignedEpollFd(socket_t fd) noexcept
 {
-    _workerId = workerId;
-}
-
-bool Session::isActive() const noexcept
-{
-    return _active;
+    _assignedEpollFd = fd;
 }
 
 socket_t Session::getSocket() const
@@ -96,13 +74,11 @@ socket_t Session::getSocket() const
 
 void Session::onReadReady()
 {
-    if (!_active) return;
     read();
 }
 
 void Session::onWriteReady()
 {
-    if (!_active) return;
     write();
 }
 
@@ -120,7 +96,7 @@ bool Session::isIdle(std::chrono::milliseconds timeout) const noexcept
 
 void Session::read()
 {
-    if (!_active) return;
+    if (_writingResponse) return;
 
     size_t availableSpace;
     char* writePtr = _readBuffer.getWriteBuffer(availableSpace);
@@ -135,19 +111,26 @@ void Session::read()
 
     int bytesRead = recv(_socket, writePtr, availableSpace, 0);
 
-    if (bytesRead > 0) {
+    if (bytesRead > 0)
+    {
         _readBuffer.advanceWritePos(bytesRead);
         // INK_TRACE << "To Read on socket: " << _socket << " buffer: \n" << writePtr;
 
         // Try to parse the request - may be partial
-        if (parseRequest())
+        while (parseRequest())
         {
             handleRequest();
+
+            if (_writeBuffer.size() > 0)
+            {
+                _eventLoop->updateSessionInterest(shared_from_this(), SessionInterest::ON_WRITE);
+                return;
+            }
         }
-        else
+
+        if (!_writingResponse)
         {
-            // Need more data, continue reading
-            _eventLoop->updateSessionInterest(shared_from_this(), true, false);
+            _eventLoop->updateSessionInterest(shared_from_this(), SessionInterest::ON_READ);
         }
     }
     else if (bytesRead == 0)
@@ -159,23 +142,14 @@ void Session::read()
     else
     {
         // Error or would block
-        int errorCode =
-#ifdef _WIN32
-            WSAGetLastError();
-        if (errorCode != WSAEWOULDBLOCK) {
-#else
-            errno;
-        if (errorCode != EAGAIN && errorCode != EWOULDBLOCK)
+        int errorCode = errno;
+        if (errorCode != EAGAIN && errorCode != EWOULDBLOCK &&
+            errorCode != EBADF && errorCode != ECONNRESET)
         {
-#endif
-            INK_ERROR << "Socket read error: " << errorCode;
-            close();
+            INK_ERROR << "Socket read error: " << errorCode << " (" << strerror(errorCode) << ")";
         }
-        else
-        {
-            // Would block, try again later
-            _eventLoop->updateSessionInterest(shared_from_this(), true, false);
-        }
+
+        close();
     }
 }
 
@@ -249,16 +223,16 @@ bool Session::parseRequest()
             _req.addHeader(std::string(key), std::string(value));
 
             // Track important headers by direct comparison (avoiding extra lookups)
-            if (key == "Connection")
+            if (Conversions::iequals(key, "Connection"))
                 connectionValue = value;
-            else if (key == "Content-Length")
+            else if (Conversions::iequals(key, "Content-Length"))
                 contentLengthValue = value;
         }
         headerStart = headerEnd + 2;
     }
 
     // Set connection state
-    _keepAlive = (connectionValue == "keep-alive");
+    _keepAlive = Conversions::iequals(connectionValue, "keep-alive");
 
     // Process the body if Content-Length is present
     if (!contentLengthValue.empty())
@@ -290,14 +264,11 @@ bool Session::parseRequest()
 
 void Session::handleRequest()
 {
-    HttpResponse response;
-    response.addHeader("Server", "WarpApi/1.0");
+    auto start = std::chrono::high_resolution_clock::now();
 
-    // Set Connection header based on keep-alive
-    if (_keepAlive)
-        response.addHeader("Connection", "keep-alive");
-    else
-        response.addHeader("Connection", "close");
+    HttpResponse response;
+    response.setVersion("HTTP/1.1");
+    response.addHeader("Server", "WarpApi/1.0");
 
     try {
         _req.extractQueryParams();
@@ -315,54 +286,45 @@ void Session::handleRequest()
         response.setBody("Internal Server error: " + std::string(e.what()));
     }
 
-    // Serialize response to the write buffer
-    std::string responseStr = response.toString();
-
-    // Start writing the response
-    _writingResponse = true;
-    _eventLoop->updateSessionInterest(shared_from_this(), false, true);
-
-    size_t written = _writeBuffer.write(responseStr.c_str(), responseStr.length());
-
-    if (written < responseStr.length())
+    // Set Connection header based on keep-alive
+    if (_keepAlive)
     {
-        INK_ERROR << "Failed to write complete response to buffer";
-        _keepAlive = false;  // Force connection close on error
+        response.addHeader("Connection", "keep-alive");
+        // response.addHeader("Keep-Alive", "timeout=5, max=100");
+        updateActivity();
+    }
+    else
+    {
+        response.addHeader("Connection", "close");
     }
 
-    INK_LOG <<  responseStr;
+    auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> elapsed = end - start;
 
-    updateActivity();
+    // Serialize response to the write buffer
+    std::string responseStr = response.toString();
+    _writeBuffer.write(responseStr.c_str(), responseStr.length());
+
+    INK_INFO << ">> " << (int)response.getStatus() << " "
+             << (int)_req.method() << " "
+             << _req.path() << " "
+             << std::fixed << std::setprecision(4) << elapsed.count() << 's';
+
+    _writingResponse = true;
 }
 
 void Session::write()
 {
-    if (!_active) return;
-
     size_t availableData;
     const char* readPtr = _writeBuffer.getReadBuffer(availableData);
 
     if (!readPtr || availableData == 0) {
-        // No data to write
-        _writingResponse = false;
-
-        if (_keepAlive)
-        {
-            _eventLoop->updateSessionInterest(shared_from_this(), true, false);
-
-            // Reset request state
-            _req.reset();
-        }
-        // Not keep-alive, close connection
-        else
-        {
-            close();
-        }
-
+        onWriteComplete();
         return;
     }
 
     int bytesSent = send(_socket, readPtr, availableData, 0);
+    // INK_TRACE << "Wrote " << bytesSent << " response: \n" << readPtr;
 
     if (bytesSent > 0)
     {
@@ -371,45 +333,56 @@ void Session::write()
         // Check if we've written everything
         if (_writeBuffer.size() > 0) {
             // Still more to write
-            _eventLoop->updateSessionInterest(shared_from_this(), false, true);
+            _eventLoop->updateSessionInterest(shared_from_this(), SessionInterest::ON_WRITE);
         }
         else
         {
-            // All data written
-            _writingResponse = false;
-
-            if (_keepAlive) {
-                // Prepare for next request if keep-alive
-                _eventLoop->updateSessionInterest(shared_from_this(), true, false);
-                // Reset request for next use
-                _req.reset();
-            }
-            else
-            {
-                // Not keep-alive, close the connection
-                close();
-            }
+            // All data sent
+            onWriteComplete();
         }
     }
     else
     {
         // Error or would block
-        int errorCode =
-#ifdef _WIN32
-            WSAGetLastError();
-        if (errorCode != WSAEWOULDBLOCK) {
-#else
-            errno;
-        if (errorCode != EAGAIN && errorCode != EWOULDBLOCK)
+        int errorCode = errno;
+        if (errorCode == EAGAIN && errorCode == EWOULDBLOCK)
         {
-#endif
-            INK_ERROR << "Socket write error: " << errorCode;
-            close();
+            // Socket buffer full. Keep waiting for ON_WRITE.
+            _eventLoop->updateSessionInterest(shared_from_this(), SessionInterest::ON_WRITE);
         }
         else
         {
-            // Would block, try again later
-            _eventLoop->updateSessionInterest(shared_from_this(), false, true);
+            INK_ERROR << "Write Error: " << errno;
+            close();
         }
+    }
+}
+
+void Session::onWriteComplete()
+{
+    _writingResponse = false;
+
+    if (_keepAlive)
+    {
+        _req.reset();
+
+        size_t availableRead;
+        _readBuffer.getReadBuffer(availableRead);
+
+        if (availableRead > 0)
+        {
+            // data is available, parse it immediately
+            // don't need to wait for EPOLLIN
+            read();
+        }
+        else
+        {
+            // No data, wait for EPOLLIN
+            _eventLoop->updateSessionInterest(shared_from_this(), SessionInterest::ON_READ);
+        }
+    }
+    else
+    {
+        close();
     }
 }

@@ -23,11 +23,6 @@ bool SettingsData::isValid() const {
         return false;
     }
 
-    if (max_auxiliar_threads == 0 || max_auxiliar_threads > max_threads) {
-        INK_ERROR << "max_event_loop_threads must be between 1 and max_threads";
-        return false;
-    }
-
     // Check reasonable backlog size
     if (backlog_size == 0) {
         INK_ERROR << "backlog_size must be greater than 0";
@@ -72,10 +67,8 @@ bool Settings::loadSettings(const ink::EnhancedJson& configs, SettingsData& data
     try {
         data.ip = configs.get<std::string>("ip", "0.0.0.0");
         data.port = configs.get<uint16_t>("port", 8080);
-        data.max_threads = std::min(configs.get<uint>("max_threads", 1),
+        data.max_threads = std::min(configs.get<uint>("max_threads", 2),
                                     std::thread::hardware_concurrency());
-        data.max_auxiliar_threads = std::min(configs.get<uint>("max_event_loop_threads", 1),
-                                               data.max_threads);
         data.backlog_size = configs.get<size_t>("backlog_size", SOMAXCONN);
         data.connection_timeout_ms = configs.get<size_t>("connection_timeout_ms", 60000);
         data.max_body_size = configs.get<size_t>("max_body_size", 1 * 1024 * 1024);

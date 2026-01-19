@@ -13,6 +13,7 @@ typedef SOCKET socket_t;
 #define SOCKET_ERROR_VALUE INVALID_SOCKET
 #else
 #include <sys/socket.h>
+#include <sys/resource.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h> // For TCP_NODELAY
 #include <arpa/inet.h>
@@ -91,6 +92,11 @@ enum WARP_API StatusCode {
     service_unavailable = 503,
     gateway_timeout = 504,
     http_version_not_supported = 505
+};
+
+enum WARP_API SessionInterest {
+    ON_READ = 0,
+    ON_WRITE
 };
 
 class WARP_API HttpRequest;

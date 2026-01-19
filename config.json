@@ -1,8 +1,7 @@
 {
-		"ip": "0.0.0.0",
-		"port": 41385,
-		"max_threads": 4,
-		"max_auxiliar_threads": 2,
-		"backlog_size": 4096,
-		"connection_timeout_ms": 60000
+  "ip": "0.0.0.0",
+  "port": 41385,
+  "max_threads": 12,
+  "backlog_size": 8192,
+  "connection_timeout_ms": 60000
 }

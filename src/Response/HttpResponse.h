@@ -23,6 +23,7 @@ class WARP_API HttpResponse
 public:
     HttpResponse() : _data() {}
 
+    int getStatus() { return _data.status; }
     void setStatus(int status) { _data.status = status; }
     void setVersion(const std::string& version) { _data.version = version; }
     void addHeader(const std::string& key, const std::string& value) {

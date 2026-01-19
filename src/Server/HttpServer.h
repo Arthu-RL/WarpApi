@@ -4,12 +4,12 @@
 #pragma once
 
 #include "EventLoop/EventLoop.h"
-#include "Managers/SessionManagerWorker.h"
+
+class SessionManagerWorker;
 
 class WARP_API HttpServer {
 public:
     HttpServer(uint16_t port,
-               size_t numThreads = 2,
                size_t connection_timeout_ms = 60000,
                size_t backlog_size = SOMAXCONN);
     ~HttpServer();
@@ -19,7 +19,6 @@ public:
 
     // Configuration methods
     void setBacklogSize(int size);
-    void setConnectionTimeout(int milliseconds);
 
 private:
     void acceptLoop();
@@ -29,7 +28,6 @@ private:
     socket_t _serverSocket;
 
     std::atomic<bool> _running;
-    ink::ThreadPool _threadPool;
 
     // EventLoop for I/O multiplexing
     std::unique_ptr<EventLoop> _eventLoop;

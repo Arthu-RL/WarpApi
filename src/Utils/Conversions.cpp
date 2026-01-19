@@ -1,5 +1,6 @@
 #include "Conversions.h"
 
+#include <algorithm>
 #include <sstream>
 
 Conversions::Conversions() {}
@@ -46,4 +47,12 @@ const std::string Conversions::urlDecode(const std::string_view input)
     }
 
     return decoded;
+}
+
+
+const bool Conversions::iequals(std::string_view a, std::string_view b) noexcept
+{
+    return std::equal(a.begin(), a.end(), b.begin(), b.end(), [&](char a, char b){
+        return std::tolower(a) == std::tolower(b);
+    });
 }
