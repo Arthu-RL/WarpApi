@@ -23,7 +23,7 @@ void GeneralServices::registerAllEndpoints()
         // response.setHeader(boost::beast::http::field::connection, "keep-alive");
         const auto& params = request.queryParams();
         const auto& body = request.body();
-        auto jObj = ink::EnhancedJsonUtils::loadFromString(body);
+        auto jObj = ink::EnhancedJsonUtils::loadFromString(body.data());
 
         auto result = ink::EnhancedJson();
 
@@ -59,14 +59,6 @@ void GeneralServices::registerAllEndpoints()
         obj["status"] = "ok";
         response.setBody(obj.toPrettyString());
     });
-
-    registerEndpoint("/apibenchmark", Method::POST,
-                     [&](const HttpRequest& request, HttpResponse& response)
-    {
-        const auto& body = request.body();
-        response.setBody(body);
-    });
-
     registerEndpoint("/version", Method::GET,
                      [&](const HttpRequest& request, HttpResponse& response)
     {

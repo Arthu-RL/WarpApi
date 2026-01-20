@@ -28,11 +28,10 @@ typedef int socket_t;
 #endif
 
 #include <ink/ink.hpp>
-#include <tbb/concurrent_unordered_map.h>
 
 #define WARP_API
 
-#define MAX_EVENTS 16384
+#define MAX_EVENTS 8192
 #define EPOLL_WAIT_TIMEOUT 1000 // 1 sec
 #define MIN_REQUEST_SIZE 16
 
@@ -106,6 +105,6 @@ class WARP_API EventLoop;
 class WARP_API HttpServer;
 
 typedef std::function<void(const HttpRequest&, HttpResponse&)> RequestHandler;
-typedef tbb::concurrent_unordered_map<socket_t, std::shared_ptr<Session>> SessionTable;
+typedef std::unordered_map<socket_t, std::shared_ptr<Session>> SessionTable;
 
 #endif // WARPDEFS_H

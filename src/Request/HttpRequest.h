@@ -19,18 +19,15 @@ struct WARP_API RequestData {
 
     Method method;
     std::string path;
-    std::string version;
-    std::unordered_map<std::string, std::string> headers;
-    std::string body;
+    std::string_view version;
+    std::unordered_map<std::string_view, std::string_view> headers;
+    std::string_view body;
 
     std::unordered_map<std::string, std::string> queryParams;
 
     void clear()
     {
         method = Method::UNKNOWN;
-        path.clear();
-        version.clear();
-        body.clear();
 
         headers.clear();
         queryParams.clear();
@@ -78,14 +75,14 @@ public:
         _data.path = std::string(path);
     }
 
-    const std::string& body() const noexcept
+    const std::string_view body() const noexcept
     {
         return _data.body;
     }
 
     void setBody(const std::string_view& buffer)
     {
-        _data.body = std::string(buffer);
+        _data.body = buffer;
     }
 
     // void appendToBody(const std::string& buffer)
@@ -93,14 +90,14 @@ public:
     //     _data.body.append(buffer);
     // }
 
-    const std::unordered_map<std::string, std::string>& headers() const noexcept
+    const std::unordered_map<std::string_view, std::string_view>& headers() const noexcept
     {
         return _data.headers;
     }
 
-    void addHeader(const std::string& key, const std::string& value)
+    void addHeader(const char* k, const size_t kLen, const char* v, const size_t vLen)
     {
-        _data.headers[key] = value;
+        _data.headers[std::string_view(k, kLen)] = std::string_view(v, vLen);
     }
 
     bool hasHeader(const std::string& key) const noexcept
@@ -108,7 +105,7 @@ public:
         return _data.headers.find(key) != _data.headers.end();
     }
 
-    const std::string& getHeader(const std::string& key, const std::string& dvalue = "") const noexcept
+    const std::string_view& getHeader(const std::string& key, const std::string& dvalue = "") const noexcept
     {
         auto it = _data.headers.find(key);
         if (it != _data.headers.end())
@@ -172,7 +169,7 @@ public:
     //     return _req.keep_alive();
     // }
 
-    const std::string version() const noexcept
+    const std::string_view version() const noexcept
     {
         return _data.version;
     }

@@ -4,21 +4,28 @@
 #pragma once
 
 #include <ink/RingBuffer.h>
-
+#include <memory>
 #include "WarpDefs.h"
 #include "Request/HttpRequest.h"
 
+// Forward decl
+struct epoll_event;
+
 class WARP_API Session : public std::enable_shared_from_this<Session> {
 public:
-    Session(socket_t socket, EventLoop* eventLoop = nullptr);
+    // Remove EventLoop* from constructor
+    explicit Session(socket_t socket, socket_t assignedEpollFd);
     ~Session();
 
-    void start();
     void close();
-    void setSocketOptimizations();
 
-    // Methods needed for EventLoop integration
+    // Direct IO Interest Management (No EventLoop pointer needed)
+    void updateIoInterest(SessionInterest interest) noexcept;
+
+    // Getters/Setters
     socket_t getSocket() const;
+
+    // Called by the Worker Thread Loop
     void onReadReady();
     void onWriteReady();
 
@@ -26,7 +33,6 @@ public:
     bool isIdle(std::chrono::milliseconds timeout) const noexcept;
 
     socket_t getAssignedEpollFd() const noexcept;
-    void setAssignedEpollFd(socket_t fd) noexcept;
 
 private:
     void read();
@@ -35,23 +41,17 @@ private:
     void handleRequest();
     void onWriteComplete();
 
-    std::atomic<socket_t> _socket;
+    socket_t _socket;
+    socket_t _assignedEpollFd;
+
     HttpRequest _req;
     bool _keepAlive;
-
-    std::atomic<std::chrono::steady_clock::time_point> _lastActivity;
-
-    // Use RingBuffer for efficient I/O
-    ink::RingBuffer _readBuffer;
-    ink::RingBuffer _writeBuffer;
-
-    // Request/response state tracking
     bool _writingResponse;
 
-    // Reference to the event loop for async I/O
-    EventLoop* _eventLoop;
+    std::chrono::steady_clock::time_point _lastActivity;
 
-    socket_t _assignedEpollFd = -1;
+    ink::RingBuffer _readBuffer;
+    ink::RingBuffer _writeBuffer;
 };
 
 #endif // SESSION_H

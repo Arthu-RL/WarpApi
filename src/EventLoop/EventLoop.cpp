@@ -1,19 +1,15 @@
 #include "EventLoop.h"
+
 #include "Server/Session.h"
 #include "Settings/Settings.h"
-#include "Managers/SessionManagerWorker.h"
 
 EventLoop::EventLoop() :
-    _workerEpollFds({}),
-    _workerWakeupFds({}),
     _running(false)
 {
-    // Empty
 }
 
 EventLoop::~EventLoop() {
     stop();
-    INK_DEBUG << "EventLoop destroyed";
 }
 
 void EventLoop::start() {
@@ -21,166 +17,167 @@ void EventLoop::start() {
     _running = true;
 
     uint max_threads = Settings::getSettings().max_threads;
-    _workerEpollFds.resize(max_threads);
-    _workerWakeupFds.resize(max_threads);
 
+    // Spawn Worker Threads
     for (u32 i = 0; i < max_threads; i++) {
-        // Initialize Linux epoll with a large size hint
-        int epfd = epoll_create1(0);
-        if (epfd < 0) throw std::runtime_error("Failed to create epoll");
-        _workerEpollFds[i] = epfd;
-
-        // Wakeup EventFD
-        int wakefd = eventfd(0, EFD_NONBLOCK);
-        if (wakefd < 0) throw std::runtime_error("Failed to create eventfd");
-        _workerWakeupFds[i] = wakefd;
-
-        _threads.emplace_back(&EventLoop::run, this, i, epfd, wakefd);
+        _threads.emplace_back(&EventLoop::runWorker, this, i);
 
         cpu_set_t cpuset;
         CPU_ZERO(&cpuset);
-        CPU_SET(i, &cpuset);
+        CPU_SET(i % std::thread::hardware_concurrency(), &cpuset);
         pthread_setaffinity_np(_threads.back().native_handle(), sizeof(cpu_set_t), &cpuset);
     }
 
-    INK_DEBUG << "EventLoop started with " << max_threads << " threads";
+    INK_INFO << "EventLoop started with " << max_threads << " independent listeners.";
 }
 
 void EventLoop::stop() {
     if (!_running) return;
-
     _running = false;
-
-    // Use eventfd to wake up epoll
-    for (auto& fd : _workerWakeupFds) {
-        uint64_t one = 1;
-        ::write(fd, &one, sizeof(one));
-    }
 
     for (auto& t : _threads) {
         if (t.joinable()) t.join();
     }
-
     _threads.clear();
-
-    // Close Epoll FDs
-    for (int fd : _workerEpollFds) {
-        close(fd);
-    }
-    _workerEpollFds.clear();
-
-    // Close Wakeup FDs
-    for (int fd : _workerWakeupFds) {
-        close(fd);
-    }
-    _workerWakeupFds.clear();
-
     INK_DEBUG << "EventLoop stopped";
 }
 
-void EventLoop::addSession(std::shared_ptr<Session> session) {
-    _nextThreadIdx = (_nextThreadIdx+1) % _workerEpollFds.size();
-    socket_t epfd = _workerEpollFds[_nextThreadIdx];
-    socket_t sockfd = session->getSocket();
-
-    struct epoll_event ev;
-    ev.events = EPOLLIN | EPOLLET;
-    ev.data.fd = sockfd;
-
-    if (epoll_ctl(epfd, EPOLL_CTL_ADD, sockfd, &ev) < 0)
+void EventLoop::runWorker(i32 threadIdx) {
+    int listenFd = socket(AF_INET, SOCK_STREAM, 0);
+    if (listenFd < 0)
     {
-        INK_ERROR << "Epoll ADD failed (epfd:" << epfd << ", sockfd:" << sockfd << "): " << strerror(errno);
+        INK_ERROR << "Thread " << threadIdx << " failed to create socket";
         return;
     }
 
-    session->setAssignedEpollFd(epfd);
-}
+    int opt = 1;
+    setsockopt(listenFd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    // Allow multiple threads to listen on same port
+    setsockopt(listenFd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
+    // Set TCP_NODELAY to disable Nagle's algorithm
+    setsockopt(listenFd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
+    // Set non-blocking mode for the server socket
+    int flags = fcntl(listenFd, F_GETFL, 0);
+    fcntl(listenFd, F_SETFL, flags | O_NONBLOCK);
 
-void EventLoop::updateSessionInterest(std::shared_ptr<Session> session, const SessionInterest iOinterest) {
-    int epfd = session->getAssignedEpollFd();
-    socket_t sockfd = session->getSocket();
+    auto& settings = Settings::getSettings();
 
-    struct epoll_event ev;
-    ev.data.fd = sockfd;
-    ev.events = EPOLLET;
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_port = htons(settings.port);
 
-    switch (iOinterest) {
-        case SessionInterest::ON_READ:
-            ev.events |= EPOLLIN;
-            break;
-        case SessionInterest::ON_WRITE:
-            ev.events |= EPOLLOUT;
-            break;
+    if (bind(listenFd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        INK_ERROR << "Thread " << threadIdx << " bind failed: " << strerror(errno);
+        close(listenFd);
+        return;
     }
 
-    epoll_ctl(epfd, EPOLL_CTL_MOD, sockfd, &ev);
+    if (listen(listenFd, settings.backlog_size) < 0) {
+        INK_ERROR << "Thread " << threadIdx << " listen failed";
+        close(listenFd);
+        return;
+    }
 
-    INK_TRACE << "Session interest updated (Linux): ioInterest=" << iOinterest;
-}
+    // Create Epoll for this thread
+    int epfd = epoll_create1(0);
 
-void EventLoop::run(i32 threadIdx, socket_t epollfd, socket_t wakeupfd) {
+    // Add Listener to Epoll
+    struct epoll_event ev;
+    ev.events = EPOLLIN | EPOLLET;
+    ev.data.fd = listenFd;
+    epoll_ctl(epfd, EPOLL_CTL_ADD, listenFd, &ev);
+
+    // Using one session table per thread if lazy routine
+    SessionTable sessions;
+    sessions.reserve(MAX_EVENTS);
+
     struct epoll_event events[MAX_EVENTS];
 
-    struct epoll_event ev;
-    ev.events = EPOLLIN;
-    ev.data.fd = wakeupfd;
-    epoll_ctl(epollfd, EPOLL_CTL_ADD, wakeupfd, &ev);
+    INK_DEBUG << "Thread " << threadIdx << " listening on port " << settings.port;
 
-    SessionManagerWorker* sessionWorker = SessionManagerWorker::getInstance();
+    while (_running)
+    {
+        int nfds = epoll_wait(epfd, events, MAX_EVENTS, EPOLL_WAIT_TIMEOUT);
 
-    INK_TRACE << "Wakeupfd register: " <<  wakeupfd << " for thread: " << threadIdx;
-
-    while (_running) {
-        int nfds = epoll_wait(epollfd, events, MAX_EVENTS, EPOLL_WAIT_TIMEOUT);
-
-        if (nfds < 0)
+        for (int i = 0; i < nfds; ++i)
         {
-            // Interrupted, just try again
-            if (errno == EINTR)
-                continue;
+            int fd = events[i].data.fd;
+            uint32_t evs = events[i].events;
 
-            INK_ERROR << "epoll_wait error: " << strerror(errno);
-            break;
+            if (fd == listenFd)
+            {
+                while (true)
+                {
+                    sockaddr_in clientAddr;
+                    socklen_t len = sizeof(clientAddr);
+                    int clientSock = accept4(
+                        listenFd,
+                        (sockaddr*)&clientAddr,
+                        &len,
+                        SOCK_NONBLOCK | SOCK_CLOEXEC
+                    );
+
+                    if (clientSock < 0) {
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+                        break;
+                    }
+
+                    auto session = std::make_shared<Session>(clientSock, epfd);
+
+                    // Add to Map
+                    sessions[clientSock] = session;
+
+                    // Add to Epoll
+                    struct epoll_event clientEv;
+                    clientEv.events = EPOLLIN | EPOLLET | EPOLLRDHUP;
+                    clientEv.data.fd = clientSock;
+                    epoll_ctl(epfd, EPOLL_CTL_ADD, clientSock, &clientEv);
+                }
+                continue;
+            }
+
+            auto it = sessions.find(fd);
+            if (it != sessions.end())
+            {
+                auto& session = it->second;
+
+                if (evs & (EPOLLERR | EPOLLHUP))
+                {
+                    session->close();
+                }
+                else
+                {
+                    if (evs & EPOLLIN)
+                    {
+                        session->onReadReady();
+                    }
+
+                    if (session->getSocket() != SOCKET_ERROR_VALUE && (evs & EPOLLOUT))
+                    {
+                        session->onWriteReady();
+                    }
+                }
+            }
         }
 
-        for (int i = 0; i < nfds; i++)
-        {
-            if (events[i].data.fd == wakeupfd)
-            {
-                uint64_t value;
-                read(wakeupfd, &value, sizeof(value));
-                INK_TRACE << "Wakeup event thread: " << threadIdx;
-                continue;
-            }
+        // // Lazy cleanupclosed or idle sessions
+        // for (auto it = sessions.begin(); it != sessions.end(); )
+        // {
+        //     if (it->second->getSocket() == SOCKET_ERROR_VALUE || it->second->isIdle(std::chrono::milliseconds(settings.connection_timeout_ms)))
+        //     {
+        //         epoll_ctl(epfd, EPOLL_CTL_DEL, it->first, nullptr);
 
-            std::shared_ptr<Session> session = sessionWorker->getSession(events[i].data.fd);
-
-            if (!session) {
-                // Stale event or closed session
-                epoll_ctl(epollfd, EPOLL_CTL_DEL, events[i].data.fd, nullptr);
-                continue;
-            }
-
-            u32 evs = events[i].events;
-
-            // Error or hang-up
-            if (evs & (EPOLLERR | EPOLLHUP))
-            {
-                session->close();
-                continue;
-            }
-
-            // Read interest EPOLLIN
-            if (evs & EPOLLIN)
-            {
-                session->onReadReady();
-            }
-
-            // Write interest EPOLLOUT
-            if (evs & EPOLLOUT && session->getSocket() != SOCKET_ERROR_VALUE)
-            {
-                session->onWriteReady();
-            }
-        }
+        //         it = sessions.erase(it);
+        //         INK_DEBUG << "WHAT";
+        //     }
+        //     else
+        //     {
+        //         ++it;
+        //     }
+        // }
     }
+
+    close(listenFd);
+    close(epfd);
 }

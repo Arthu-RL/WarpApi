@@ -2,6 +2,7 @@
 
 #include <ink/LastWish.h>
 #include <ink/utils.h>
+#include <emmintrin.h>
 
 #include "EventLoop/EventLoop.h"
 #include "Managers/EndpointManager.h"
@@ -9,16 +10,133 @@
 #include "Utils/RouteIdentifier.h"
 #include "Settings/Settings.h"
 
-Session::Session(socket_t socket, EventLoop* eventLoop) :
+constexpr uint32_t fnv1a_hash(const char* str, size_t len) {
+    uint32_t hash = 2166136261u;
+    for (size_t i = 0; i < len; ++i) {
+        char c = str[i];
+        if (c >= 'A' && c <= 'Z') c += 32;
+        hash ^= static_cast<uint8_t>(c);
+        hash *= 16777619u;
+    }
+    return hash;
+}
+
+constexpr uint32_t HASH_CONNECTION = fnv1a_hash("connection", 10);
+constexpr uint32_t HASH_CONTENT_LENGTH = fnv1a_hash("content-length", 14);
+constexpr uint32_t HASH_HOST = fnv1a_hash("host", 4);
+constexpr uint32_t HASH_USER_AGENT = fnv1a_hash("user-agent", 10);
+
+inline uint32_t hashHeaderName(const char* str, size_t len) {
+    uint32_t hash = 2166136261u;
+    for (size_t i = 0; i < len; ++i) {
+        char c = str[i];
+        if (c >= 'A' && c <= 'Z') c += 32;
+        hash ^= static_cast<uint8_t>(c);
+        hash *= 16777619u;
+    }
+    return hash;
+}
+
+inline const char* find_crlf(const char* data, const char* end) {
+    const char* p = data;
+
+#if defined(__SSE2__) || defined(_M_X64) || defined(_M_IX86_FP)
+    if (end - p >= 16) {
+        const __m128i cr = _mm_set1_epi8('\r');
+
+        while (end - p >= 16) {
+            __m128i chunk = _mm_loadu_si128(
+                reinterpret_cast<const __m128i*>(p));
+
+            __m128i cmp = _mm_cmpeq_epi8(chunk, cr);
+            int mask = _mm_movemask_epi8(cmp);
+
+            if (mask) {
+                return p + __builtin_ctz(mask);
+            }
+            p += 16;
+        }
+    }
+#endif
+
+    // Scalar tail
+    while (p < end) {
+        if (*p == '\r')
+            return p;
+        ++p;
+    }
+
+    return nullptr;
+}
+
+inline bool is_crlf(const char* p, const char* end) {
+    return (p + 1 < end) && (p[0] == '\r') && (p[1] == '\n');
+}
+
+inline bool is_header_end(const char* p, const char* end) {
+    return (p + 3 < end) &&
+           (p[0] == '\r') && (p[1] == '\n') &&
+           (p[2] == '\r') && (p[3] == '\n');
+}
+
+inline bool iequals_small(std::string_view a, std::string_view b) {
+    if (a.size() != b.size()) return false;
+
+    const char* pa = a.data();
+    const char* pb = b.data();
+    size_t len = a.size();
+
+    // Unroll loop for common cases
+    switch (len) {
+    case 10: // "keep-alive"
+        if ((pa[0] | 32) != (pb[0] | 32)) return false;
+        if ((pa[1] | 32) != (pb[1] | 32)) return false;
+        if ((pa[2] | 32) != (pb[2] | 32)) return false;
+        if ((pa[3] | 32) != (pb[3] | 32)) return false;
+        if ((pa[4] | 32) != (pb[4] | 32)) return false;
+        if ((pa[5] | 32) != (pb[5] | 32)) return false;
+        if ((pa[6] | 32) != (pb[6] | 32)) return false;
+        if ((pa[7] | 32) != (pb[7] | 32)) return false;
+        if ((pa[8] | 32) != (pb[8] | 32)) return false;
+        if ((pa[9] | 32) != (pb[9] | 32)) return false;
+        return true;
+
+    case 5: // "close"
+        if ((pa[0] | 32) != (pb[0] | 32)) return false;
+        if ((pa[1] | 32) != (pb[1] | 32)) return false;
+        if ((pa[2] | 32) != (pb[2] | 32)) return false;
+        if ((pa[3] | 32) != (pb[3] | 32)) return false;
+        if ((pa[4] | 32) != (pb[4] | 32)) return false;
+        return true;
+
+    default:
+        for (size_t i = 0; i < len; ++i) {
+            if ((pa[i] | 32) != (pb[i] | 32)) return false;
+        }
+        return true;
+    }
+}
+
+inline size_t fast_atoi(const char* str, size_t len) {
+    size_t result = 0;
+    for (size_t i = 0; i < len; ++i) {
+        char c = str[i];
+        if (c < '0' || c > '9') break;
+        result = result * 10 + (c - '0');
+    }
+    return result;
+}
+
+Session::Session(socket_t socket, socket_t assignedEpollFd) :
     _socket(socket),
+    _assignedEpollFd(assignedEpollFd),
     _req(),
     _keepAlive(false),
-    _readBuffer(Settings::getSettings().max_request_size),
-    _writeBuffer(Settings::getSettings().max_response_size),
     _writingResponse(false),
-    _eventLoop(eventLoop)
+    _readBuffer(Settings::getSettings().max_request_size),
+    _writeBuffer(Settings::getSettings().max_response_size)
 {
-    // Empty
+    updateActivity();
 }
 
 Session::~Session()
@@ -26,40 +144,17 @@ Session::~Session()
     close();
 }
 
-void Session::start()
-{
-    // Do some socket optimizations
-    setSocketOptimizations();
-    // Register with event loop
-    _eventLoop->addSession(shared_from_this());
-}
-
 void Session::close()
 {
-    socket_t fd = _socket.exchange(SOCKET_ERROR_VALUE);
-    if (fd == SOCKET_ERROR_VALUE) return;
-    ::close(fd);
-}
+    if (_socket == SOCKET_ERROR_VALUE) return;
 
-void Session::setSocketOptimizations()
-{
-    // // Set TCP_NODELAY for client socket too
-    // int opt = 1;
-    // setsockopt(_socket, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&opt), sizeof(opt));
-
-    // Set socket to non-blocking mode
-    int flags = fcntl(_socket, F_GETFL, 0);
-    fcntl(_socket, F_SETFL, flags | O_NONBLOCK);
+    ::close(_socket);
+    _socket = SOCKET_ERROR_VALUE;
 }
 
 socket_t Session::getAssignedEpollFd() const noexcept
 {
     return _assignedEpollFd;
-}
-
-void Session::setAssignedEpollFd(socket_t fd) noexcept
-{
-    _assignedEpollFd = fd;
 }
 
 socket_t Session::getSocket() const
@@ -79,183 +174,223 @@ void Session::onWriteReady()
 
 void Session::updateActivity()
 {
-    _lastActivity.store(std::chrono::steady_clock::now());
+    _lastActivity = std::chrono::steady_clock::now();
 }
 
 bool Session::isIdle(std::chrono::milliseconds timeout) const noexcept
 {
-    auto now = std::chrono::steady_clock::now();
-    auto last = _lastActivity.load();
-    return (now - last) > timeout;
+    return (std::chrono::steady_clock::now() - _lastActivity) > timeout;
 }
 
+void Session::updateIoInterest(SessionInterest interest) noexcept
+{
+    if (_socket == SOCKET_ERROR_VALUE) return;
+
+    struct epoll_event ev;
+    ev.data.fd = _socket;
+    ev.events = EPOLLET;
+    if (interest == SessionInterest::ON_READ)
+    {
+        ev.events |= EPOLLIN;
+    }
+    else
+    {
+        ev.events |= EPOLLOUT;
+    }
+
+    epoll_ctl(_assignedEpollFd, EPOLL_CTL_MOD, _socket, &ev);
+}
 void Session::read()
 {
     if (_writingResponse) return;
 
-    size_t availableSpace;
-    char* writePtr = _readBuffer.getWriteBuffer(availableSpace);
-
-    if (!writePtr || availableSpace == 0)
+    while (true)
     {
-        // Buffer is full - expand or handle overflow
-        INK_ERROR << "Read buffer full, closing connection";
-        close();
-        return;
-    }
+        size_t availableSpace;
+        char* writePtr = _readBuffer.getWriteBuffer(availableSpace);
 
-    int bytesRead = recv(_socket, writePtr, availableSpace, 0);
+        if (!writePtr || availableSpace == 0) {
+            INK_ERROR << "Read buffer full";
+            close();
+            return;
+        }
 
-    if (bytesRead > 0)
-    {
-        _readBuffer.advanceWritePos(bytesRead);
-        // INK_TRACE << "To Read on socket: " << _socket << " buffer: \n" << writePtr;
+        int bytesRead = recv(_socket, writePtr, availableSpace, 0);
 
-        // Try to parse the request - may be partial
-        while (parseRequest())
+        if (bytesRead > 0)
         {
-            handleRequest();
+            _readBuffer.advanceWritePos(bytesRead);
 
-            if (_writeBuffer.size() > 0)
+            // Process request recved
+            while (parseRequest())
             {
-                _eventLoop->updateSessionInterest(shared_from_this(), SessionInterest::ON_WRITE);
-                return;
+                handleRequest();
+                if (_writeBuffer.size() > 0)
+                {
+                    updateIoInterest(SessionInterest::ON_WRITE);
+                    return;
+                }
+            }
+            if (bytesRead < (int)availableSpace)
+            {
+                break;
             }
         }
-
-        if (!_writingResponse)
-        {
-            _eventLoop->updateSessionInterest(shared_from_this(), SessionInterest::ON_READ);
+        else if (bytesRead == 0) {
+            close();
+            return;
+        }
+        else {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                break; // SEmpty socket wait for next Epoll event
+            }
+            close();
+            return;
         }
     }
-    else if (bytesRead == 0)
-    {
-        // Connection closed by peer
-        INK_DEBUG << "Connection closed by peer";
-        close();
-    }
-    else
-    {
-        // Error or would block
-        int errorCode = errno;
-        if (errorCode != EAGAIN && errorCode != EWOULDBLOCK &&
-            errorCode != EBADF && errorCode != ECONNRESET)
-        {
-            INK_ERROR << "Socket read error: " << errorCode << " (" << strerror(errorCode) << ")";
-        }
 
-        close();
+    if (!_writingResponse)
+    {
+        updateIoInterest(SessionInterest::ON_READ);
     }
 }
 
 bool Session::parseRequest()
 {
-    size_t availableData;
-    const char* data = _readBuffer.getReadBuffer(availableData);
-    if (!data || availableData < MIN_REQUEST_SIZE) return false;
+    size_t avail;
+    const char* data = _readBuffer.getReadBuffer(avail);
+    if (__builtin_expect(!data || avail < MIN_REQUEST_SIZE, 0))
+        return false;
 
-    std::string_view buffer(data, availableData);
+    const char* p   = data;
+    const char* end = data + avail;
 
-    // Find end of headers: "\r\n\r\n"
-    size_t headerEndPos = buffer.find("\r\n\r\n");
-    if (headerEndPos == std::string_view::npos) return false;
-    const char* endOfHeaders = data + headerEndPos + 4;
+    // REQUEST LINE
+    const char* lineEnd = find_crlf(p, end);
+    if (__builtin_expect(!lineEnd || lineEnd + 1 >= end || lineEnd[1] != '\n', 0))
+        return false;
 
-    // Find end of request line: first "\r\n"
-    size_t lineEndPos = buffer.find("\r\n");
-    if (lineEndPos == std::string_view::npos) return false;
-    const char* lineEnd = data + lineEndPos;
+    // METHOD
+    const char* methodEnd = p;
+    while (methodEnd < lineEnd && *methodEnd != ' ') ++methodEnd;
+    if (__builtin_expect(methodEnd == lineEnd, 0)) return false;
 
-    std::string_view requestLine(data, lineEnd - data);
+    std::string_view method(p, methodEnd - p);
 
-    // Find first space (after method)
-    size_t methodEnd = requestLine.find(' ');
-    if (methodEnd == std::string_view::npos) return false;
+    // PATH
+    const char* pathStart = methodEnd + 1;
+    const char* pathEnd   = pathStart;
+    while (pathEnd < lineEnd && *pathEnd != ' ') ++pathEnd;
+    if (__builtin_expect(pathEnd == lineEnd, 0)) return false;
 
-    // Find second space (after path)
-    size_t pathEnd = requestLine.find(' ', methodEnd + 1);
-    if (pathEnd == std::string_view::npos) return false;
+    std::string_view path(pathStart, pathEnd - pathStart);
 
-    std::string_view method = requestLine.substr(0, methodEnd);
-    std::string_view path = requestLine.substr(methodEnd + 1, pathEnd - methodEnd - 1);
-    std::string_view version = requestLine.substr(pathEnd + 1);
+    // VERSION
+    const char* verStart = pathEnd + 1;
+    std::string_view version(verStart, lineEnd - verStart);
 
     _req.setMethod(HttpRequest::parseMethod(method));
     _req.setPath(path);
     _req.setVersion(version);
 
-    // Parse headers in a single pass
-    const char* headerStart = lineEnd + 2;
-    const char* headerEnd = headerStart;
-    std::string_view connectionValue;
-    std::string_view contentLengthValue;
+    p = lineEnd + 2; // skip CRLF
 
-    while (headerEnd < endOfHeaders - 2)
+    // HEADERS
+    size_t contentLength = 0;
+    bool hasContentLen = false;
+    _keepAlive = true; // HTTP/1.1 default
+
+    while (__builtin_expect(p < end, 1))
     {
-        headerEnd = nullptr;
-        for (const char* p = headerStart; p < endOfHeaders - 1; p++)
+        // End of headers
+        if (__builtin_expect(p + 1 < end && p[0] == '\r' && p[1] == '\n', 0))
         {
-            if (*p == '\r' && *(p+1) == '\n')
+            p += 2;
+            break;
+        }
+
+        const char* hEnd = find_crlf(p, end);
+        if (__builtin_expect(!hEnd || hEnd + 1 >= end || hEnd[1] != '\n', 0))
+        {
+            return false;
+        }
+
+        const char* colon = p;
+        while (colon < hEnd && *colon != ':')
+        {
+            ++colon;
+        }
+
+        if (colon == hEnd)
+        {
+            p = hEnd + 2;
+            continue;
+        }
+
+        const char* k = p;
+        size_t klen = colon - p;
+
+        const char* v = colon + 1;
+        if (v < hEnd && *v == ' ')
+        {
+            ++v;
+        }
+        size_t vlen = hEnd - v;
+
+        // hash
+        uint32_t h = 2166136261u;
+        for (const char* s = k; s < k + klen; ++s)
+        {
+            h ^= uint8_t(*s | 32);
+            h *= 16777619u;
+        }
+
+        switch (h)
+        {
+        case HASH_CONNECTION:
+            if (klen == 10)
             {
-                headerEnd = p;
-                break;
+                _keepAlive = iequals_small(std::string_view(v, vlen), "keep-alive");
             }
-        }
-        if (!headerEnd)
             break;
 
-        std::string_view headerLine(headerStart, headerEnd - headerStart);
-        if (headerLine.empty())
+        case HASH_CONTENT_LENGTH:
+            if (klen == 14)
+            {
+                contentLength = fast_atoi(v, vlen);
+                hasContentLen = true;
+                if (contentLength > Settings::getSettings().max_body_size)
+                {
+                    return false;
+                }
+            }
             break;
-
-        size_t colonPos = headerLine.find(": ");
-        if (colonPos != std::string_view::npos)
-        {
-            std::string_view key = headerLine.substr(0, colonPos);
-            std::string_view value = headerLine.substr(colonPos + 2);
-
-            // Add header to request
-            _req.addHeader(std::string(key), std::string(value));
-
-            // Track important headers by direct comparison (avoiding extra lookups)
-            if (Conversions::iequals(key, "Connection"))
-                connectionValue = value;
-            else if (Conversions::iequals(key, "Content-Length"))
-                contentLengthValue = value;
         }
-        headerStart = headerEnd + 2;
+
+        _req.addHeader(k, klen, v, vlen);
+        p = hEnd + 2;
     }
 
-    // Set connection state
-    _keepAlive = Conversions::iequals(connectionValue, "keep-alive");
-
-    // Process the body if Content-Length is present
-    if (!contentLengthValue.empty())
+    // BODY
+    if (hasContentLen && contentLength > 0)
     {
-        // Use fast string-to-int conversion avoiding exceptions from std::stoul
-        size_t contentLength = ink::utils::string_int(contentLengthValue);
-
-        // guard against overflow for security
-        if (contentLength > Settings::getSettings().max_body_size)
+        size_t headerSize = p - data;
+        if (avail < headerSize + contentLength)
+        {
             return false;
+        }
 
-        size_t headersSize = endOfHeaders - data;
-        // There is no BODY
-        if (availableData < headersSize + contentLength)
-            return false;
-
-        std::string_view bodyView(endOfHeaders, contentLength);
-
-        // Set body without additional copies
-        _req.setBody(bodyView);
-        _readBuffer.advanceReadPos(headersSize + contentLength);
-    } else {
-        // No Content-Length, assume no body
-        _readBuffer.advanceReadPos(endOfHeaders - data);
+        _req.setBody(std::string_view(p, contentLength));
+        _readBuffer.advanceReadPos(headerSize + contentLength);
+    }
+    else
+    {
+        _readBuffer.advanceReadPos(p - data);
     }
 
     return true;
 }
+
 
 void Session::handleRequest()
 {
@@ -325,10 +460,10 @@ void Session::write()
     {
         _writeBuffer.advanceReadPos(bytesSent);
 
-        // Check if we've written everything
-        if (_writeBuffer.size() > 0) {
-            // Still more to write
-            _eventLoop->updateSessionInterest(shared_from_this(), SessionInterest::ON_WRITE);
+        if (_writeBuffer.size() > 0)
+        {
+            // more to write
+            updateIoInterest(SessionInterest::ON_WRITE);
         }
         else
         {
@@ -338,12 +473,10 @@ void Session::write()
     }
     else
     {
-        // Error or would block
-        int errorCode = errno;
-        if (errorCode == EAGAIN && errorCode == EWOULDBLOCK)
+        if (errno == EAGAIN && errno == EWOULDBLOCK)
         {
             // Socket buffer full. Keep waiting for ON_WRITE.
-            _eventLoop->updateSessionInterest(shared_from_this(), SessionInterest::ON_WRITE);
+            updateIoInterest(SessionInterest::ON_WRITE);
         }
         else
         {
@@ -373,7 +506,7 @@ void Session::onWriteComplete()
         else
         {
             // No data, wait for EPOLLIN
-            _eventLoop->updateSessionInterest(shared_from_this(), SessionInterest::ON_READ);
+            updateIoInterest(SessionInterest::ON_WRITE);
         }
     }
     else

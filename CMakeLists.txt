@@ -18,12 +18,12 @@ set(ALL_LIBRARY_PATH "$ENV{LIBRARY_PATH}/lib")
 
 # # Find required packages
 find_package(Threads REQUIRED)
-find_library(TBB_STATIC_LIB NAMES libtbb.a tbb HINTS ${ALL_LIBRARY_PATH})
+# find_library(TBB_STATIC_LIB NAMES libtbb.a tbb HINTS ${ALL_LIBRARY_PATH})
 find_library(INK_LIB ink HINTS ${ALL_LIBRARY_PATH})
 
-if(NOT TBB_STATIC_LIB)
-    message(FATAL_ERROR "TBB static library (libtbb.a) not found!")
-endif()
+# if(NOT TBB_STATIC_LIB)
+#     message(FATAL_ERROR "TBB static library (libtbb.a) not found!")
+# endif()
 
 # Collect source files
 file(GLOB_RECURSE SOURCES
@@ -43,7 +43,17 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
         target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wpedantic)
     endif()
 else()
-    target_compile_options(${PROJECT_NAME} PRIVATE -O3 -DNDEBUG)
+    target_compile_options(${PROJECT_NAME} PRIVATE
+        -O3
+        -march=native
+        -mtune=native
+        -fno-exceptions
+        -fno-rtti
+        -fno-plt
+        -ffunction-sections
+        -fdata-sections
+    )
+    target_compile_definitions(${PROJECT_NAME} PRIVATE NDEBUG)
 endif()
 
 set(APP_CONFIGS "${CMAKE_SOURCE_DIR}/config.json")
@@ -68,7 +78,7 @@ target_include_directories(${PROJECT_NAME} PUBLIC
 # Link libraries
 target_link_libraries(${PROJECT_NAME} PRIVATE
     Threads::Threads
-    ${TBB_STATIC_LIB}
+    # ${TBB_STATIC_LIB}
     ${INK_LIB}
     dl
 )

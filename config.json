@@ -3,5 +3,5 @@
   "port": 41385,
   "max_threads": 12,
   "backlog_size": 8192,
-  "connection_timeout_ms": 60000
+  "connection_timeout_ms": 5000
 }

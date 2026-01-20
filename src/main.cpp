@@ -22,7 +22,7 @@ void signalHandler(int signal) {
     exit(signal);
 }
 
-int main(int argc, char** argv)
+int main(int /*argc*/, char** /*argv*/)
 {
     // Initialize logger
     INK_CORE_LOGGER->setName("WarpAPI");
@@ -36,9 +36,7 @@ int main(int argc, char** argv)
         INK_ERROR << "Failed to load config.json";
         std::exit(EXIT_FAILURE);
     }
-
     SettingsData settings = Settings(appConfig).getSettings();
-    INK_ASSERT_MSG(Settings::isValid(), "Settings not initialized!");
 
     INK_INFO << "WarpAPI settings loaded.";
 
@@ -52,11 +50,8 @@ int main(int argc, char** argv)
         INK_INFO << "Registered endpoints: " << endpointManager.count();
 
         // Create and configure the server
-        HttpServer server(settings.port, settings.connection_timeout_ms, settings.backlog_size);
+        HttpServer server;
         g_server = &server;
-
-        // Configure server parameters
-        server.setBacklogSize(settings.backlog_size);
 
         // Set up signal handlers for graceful shutdown
         std::signal(SIGINT, signalHandler);
@@ -64,11 +59,6 @@ int main(int argc, char** argv)
 
         // Start the server
         server.start();
-
-        // // Keep main thread alive (don't need because main thread is running server loop)
-        // while (true) {
-        //     std::this_thread::sleep_for(std::chrono::seconds(1));
-        // }
     }
     catch (const std::exception& e)
     {
