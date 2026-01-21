@@ -1,5 +1,7 @@
 #include "EventLoop.h"
 
+#include <ink/TimerWheel.h>
+
 #include "Server/Session.h"
 #include "Settings/Settings.h"
 
@@ -88,9 +90,12 @@ void EventLoop::runWorker(i32 threadIdx) {
     ev.data.fd = listenFd;
     epoll_ctl(epfd, EPOLL_CTL_ADD, listenFd, &ev);
 
+    ink::TimerWheel timerWheel(60);
+
     // Using one session table per thread if lazy routine
-    SessionTable sessions;
-    sessions.reserve(MAX_EVENTS);
+    // Using Vector for O(1) access instead of Map
+    std::vector<std::shared_ptr<Session>> sessionsTable;
+    sessionsTable.resize(MAX_EVENTS);
 
     struct epoll_event events[MAX_EVENTS];
 
@@ -98,7 +103,8 @@ void EventLoop::runWorker(i32 threadIdx) {
 
     while (_running)
     {
-        int nfds = epoll_wait(epfd, events, MAX_EVENTS, EPOLL_WAIT_TIMEOUT);
+        int timeout = timerWheel.timeToNextTickMillis();
+        int nfds = epoll_wait(epfd, events, MAX_EVENTS, timeout);
 
         for (int i = 0; i < nfds; ++i)
         {
@@ -109,73 +115,71 @@ void EventLoop::runWorker(i32 threadIdx) {
             {
                 while (true)
                 {
-                    sockaddr_in clientAddr;
-                    socklen_t len = sizeof(clientAddr);
                     int clientSock = accept4(
-                        listenFd,
-                        (sockaddr*)&clientAddr,
-                        &len,
+                        listenFd, nullptr, nullptr,
                         SOCK_NONBLOCK | SOCK_CLOEXEC
                     );
 
-                    if (clientSock < 0) {
-                        if (errno == EAGAIN || errno == EWOULDBLOCK) break;
-                        break;
+                    if (clientSock < 0)
+                    {
+                        if (errno == EAGAIN || errno == EWOULDBLOCK)
+                            break;
+                        continue;
                     }
 
                     auto session = std::make_shared<Session>(clientSock, epfd);
 
-                    // Add to Map
-                    sessions[clientSock] = session;
+                    if (clientSock >= (int)sessionsTable.size())
+                    {
+                        sessionsTable.resize(clientSock * 2);
+                    }
 
-                    // Add to Epoll
-                    struct epoll_event clientEv;
-                    clientEv.events = EPOLLIN | EPOLLET | EPOLLRDHUP;
-                    clientEv.data.fd = clientSock;
-                    epoll_ctl(epfd, EPOLL_CTL_ADD, clientSock, &clientEv);
+                    sessionsTable[clientSock] = session;
+
+                    epoll_event ev{};
+                    ev.data.fd = clientSock;
+                    ev.events = EPOLLIN | EPOLLET;
+                    epoll_ctl(epfd, EPOLL_CTL_ADD, clientSock, &ev);
                 }
                 continue;
             }
 
-            auto it = sessions.find(fd);
-            if (it != sessions.end())
+            auto& session = sessionsTable[fd];
+            if (!session)
             {
-                auto& session = it->second;
-
-                if (evs & (EPOLLERR | EPOLLHUP))
-                {
-                    session->close();
-                }
-                else
-                {
-                    if (evs & EPOLLIN)
-                    {
-                        session->onReadReady();
-                    }
-
-                    if (session->getSocket() != SOCKET_ERROR_VALUE && (evs & EPOLLOUT))
-                    {
-                        session->onWriteReady();
-                    }
-                }
+                epoll_ctl(epfd, EPOLL_CTL_DEL, fd, nullptr);
+                continue;
             }
+
+            bool activity = false;
+            // read
+            if (evs & (EPOLLIN | EPOLLRDHUP))
+                activity |= session->onReadReady();
+
+            // write
+            if (session->getSocket() != SOCKET_ERROR_VALUE && (evs & EPOLLOUT))
+                activity |= session->onWriteReady();
+
+            // We DO NOT close on RDHUP here, because we might still be sending the response (Half-Close).
+            if (evs & (EPOLLERR | EPOLLHUP))
+            {
+                timerWheel.unlink(session.get());
+                session->close();
+                sessionsTable[fd].reset();
+                continue;
+            }
+
+            if (activity)
+                timerWheel.update(session.get());
         }
 
-        // // Lazy cleanupclosed or idle sessions
-        // for (auto it = sessions.begin(); it != sessions.end(); )
-        // {
-        //     if (it->second->getSocket() == SOCKET_ERROR_VALUE || it->second->isIdle(std::chrono::milliseconds(settings.connection_timeout_ms)))
-        //     {
-        //         epoll_ctl(epfd, EPOLL_CTL_DEL, it->first, nullptr);
-
-        //         it = sessions.erase(it);
-        //         INK_DEBUG << "WHAT";
-        //     }
-        //     else
-        //     {
-        //         ++it;
-        //     }
-        // }
+        if (timerWheel.timeToNextTickMillis() == 0)
+        {
+            timerWheel.processExpired([&](ink::TimerNode* n) {
+                Session* s = static_cast<Session*>(n);
+                s->close();
+            });
+        }
     }
 
     close(listenFd);

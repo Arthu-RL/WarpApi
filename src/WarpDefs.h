@@ -34,6 +34,7 @@ typedef int socket_t;
 #define MAX_EVENTS 8192
 #define EPOLL_WAIT_TIMEOUT 1000 // 1 sec
 #define MIN_REQUEST_SIZE 16
+#define MAX_HEADERS_SIZE 20
 
 enum WARP_API Method { GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS, UNKNOWN };
 
@@ -93,11 +94,6 @@ enum WARP_API StatusCode {
     http_version_not_supported = 505
 };
 
-enum WARP_API SessionInterest {
-    ON_READ = 0,
-    ON_WRITE
-};
-
 class WARP_API HttpRequest;
 class WARP_API HttpResponse;
 class WARP_API Session;
@@ -105,6 +101,8 @@ class WARP_API EventLoop;
 class WARP_API HttpServer;
 
 typedef std::function<void(const HttpRequest&, HttpResponse&)> RequestHandler;
-typedef std::unordered_map<socket_t, std::shared_ptr<Session>> SessionTable;
+typedef std::vector<std::shared_ptr<Session>> SessionTable;
+
+struct Header { std::string key, value; };
 
 #endif // WARPDEFS_H

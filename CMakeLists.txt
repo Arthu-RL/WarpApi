@@ -47,7 +47,6 @@ else()
         -O3
         -march=native
         -mtune=native
-        -fno-exceptions
         -fno-rtti
         -fno-plt
         -ffunction-sections

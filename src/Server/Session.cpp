@@ -132,11 +132,10 @@ Session::Session(socket_t socket, socket_t assignedEpollFd) :
     _assignedEpollFd(assignedEpollFd),
     _req(),
     _keepAlive(false),
-    _writingResponse(false),
     _readBuffer(Settings::getSettings().max_request_size),
     _writeBuffer(Settings::getSettings().max_response_size)
 {
-    updateActivity();
+    // Empty
 }
 
 Session::~Session()
@@ -162,97 +161,128 @@ socket_t Session::getSocket() const
     return _socket;
 }
 
-void Session::onReadReady()
+bool Session::onReadReady()
 {
-    read();
+    int read = false;
+    while (1)
+    {
+        size_t availableSpace;
+        char* buf = _readBuffer.getWriteBuffer(availableSpace);
+        if (!buf || availableSpace == 0)
+        {
+            close();
+            return true;
+        }
+
+        ssize_t bytesRead = recv(_socket, buf, availableSpace, 0);
+        if (bytesRead > 0)
+        {
+            read = true;
+            _readBuffer.advanceWritePos(bytesRead);
+            while (parseRequest())
+            {
+                handleRequest();
+            }
+
+            // Do not wait for EPOLLOUT to trigger.
+            if (_writeBuffer.size() > 0)
+            {
+                onWriteReady();
+            }
+        }
+        else if (bytesRead == 0)
+        {
+            close();
+            return true;
+        }
+        else
+        {
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+                break;
+            close();
+            return true;
+        }
+    }
+
+    // Only subscribe to EPOLLOUT if we still have data pending after the attempt above
+    updateIoInterest(true, _writeBuffer.size() > 0);
+    return read;
 }
 
-void Session::onWriteReady()
+bool Session::onWriteReady()
 {
-    write();
+    bool wrote = false;
+
+    while (1)
+    {
+        size_t available;
+        const char* readBuf = _writeBuffer.getReadBuffer(available);
+
+        if (!readBuf || available == 0)
+            break;
+
+        ssize_t bytesSent = send(_socket, readBuf, available, 0);
+        // INK_TRACE << "Wrote " << bytesSent << " response: \n" << readBuf;
+
+        if (bytesSent > 0)
+        {
+            wrote = true;
+            _writeBuffer.advanceReadPos(bytesSent);
+        }
+        else
+        {
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+                break;
+            close();
+            return true;
+        }
+    }
+
+    if (_writeBuffer.size() == 0)
+        onWriteComplete();
+
+    updateIoInterest(true, _writeBuffer.size() > 0);
+    return wrote;
 }
 
-void Session::updateActivity()
+void Session::onWriteComplete()
 {
-    _lastActivity = std::chrono::steady_clock::now();
+    if (_keepAlive)
+    {
+        _req.reset();
+
+        size_t availableRead;
+        _readBuffer.getReadBuffer(availableRead);
+
+        if (availableRead > 0)
+        {
+            // We already have buffered data — parse inline
+            onReadReady();
+        }
+        else
+        {
+            // Correct: wait for READ
+            updateIoInterest(false, true);
+        }
+    }
+    else
+    {
+        close();
+    }
 }
 
-bool Session::isIdle(std::chrono::milliseconds timeout) const noexcept
-{
-    return (std::chrono::steady_clock::now() - _lastActivity) > timeout;
-}
-
-void Session::updateIoInterest(SessionInterest interest) noexcept
+void Session::updateIoInterest(bool wantRead, bool wantWrite) noexcept
 {
     if (_socket == SOCKET_ERROR_VALUE) return;
 
     struct epoll_event ev;
     ev.data.fd = _socket;
-    ev.events = EPOLLET;
-    if (interest == SessionInterest::ON_READ)
-    {
-        ev.events |= EPOLLIN;
-    }
-    else
-    {
-        ev.events |= EPOLLOUT;
-    }
+    ev.events = EPOLLET | EPOLLRDHUP;
+
+    if (wantRead)  ev.events |= EPOLLIN;
+    if (wantWrite) ev.events |= EPOLLOUT;
 
     epoll_ctl(_assignedEpollFd, EPOLL_CTL_MOD, _socket, &ev);
-}
-void Session::read()
-{
-    if (_writingResponse) return;
-
-    while (true)
-    {
-        size_t availableSpace;
-        char* writePtr = _readBuffer.getWriteBuffer(availableSpace);
-
-        if (!writePtr || availableSpace == 0) {
-            INK_ERROR << "Read buffer full";
-            close();
-            return;
-        }
-
-        int bytesRead = recv(_socket, writePtr, availableSpace, 0);
-
-        if (bytesRead > 0)
-        {
-            _readBuffer.advanceWritePos(bytesRead);
-
-            // Process request recved
-            while (parseRequest())
-            {
-                handleRequest();
-                if (_writeBuffer.size() > 0)
-                {
-                    updateIoInterest(SessionInterest::ON_WRITE);
-                    return;
-                }
-            }
-            if (bytesRead < (int)availableSpace)
-            {
-                break;
-            }
-        }
-        else if (bytesRead == 0) {
-            close();
-            return;
-        }
-        else {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                break; // SEmpty socket wait for next Epoll event
-            }
-            close();
-            return;
-        }
-    }
-
-    if (!_writingResponse)
-    {
-        updateIoInterest(SessionInterest::ON_READ);
-    }
 }
 
 bool Session::parseRequest()
@@ -394,11 +424,12 @@ bool Session::parseRequest()
 
 void Session::handleRequest()
 {
-    auto start = std::chrono::high_resolution_clock::now();
+    // auto start = std::chrono::high_resolution_clock::now();
 
     HttpResponse response;
     response.setVersion("HTTP/1.1");
     response.addHeader("Server", "WarpApi/1.0");
+    response.initBody(&_writeBuffer);
 
     try {
         _req.extractQueryParams();
@@ -421,96 +452,17 @@ void Session::handleRequest()
     {
         response.addHeader("Connection", "keep-alive");
         // response.addHeader("Keep-Alive", "timeout=5, max=100");
-        updateActivity();
     }
     else
     {
         response.addHeader("Connection", "close");
     }
 
-    auto end = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> elapsed = end - start;
+    // auto end = std::chrono::high_resolution_clock::now();
+    // std::chrono::duration<double> elapsed = end - start;
 
-    // Serialize response to the write buffer
-    std::string responseStr = response.toString();
-    _writeBuffer.write(responseStr.c_str(), responseStr.length());
-
-    INK_INFO << ">> " << (int)response.getStatus() << " "
-             << (int)_req.method() << " "
-             << _req.path() << " "
-             << std::fixed << std::setprecision(4) << elapsed.count() << 's';
-
-    _writingResponse = true;
-}
-
-void Session::write()
-{
-    size_t availableData;
-    const char* readPtr = _writeBuffer.getReadBuffer(availableData);
-
-    if (!readPtr || availableData == 0) {
-        onWriteComplete();
-        return;
-    }
-
-    int bytesSent = send(_socket, readPtr, availableData, 0);
-    // INK_TRACE << "Wrote " << bytesSent << " response: \n" << readPtr;
-
-    if (bytesSent > 0)
-    {
-        _writeBuffer.advanceReadPos(bytesSent);
-
-        if (_writeBuffer.size() > 0)
-        {
-            // more to write
-            updateIoInterest(SessionInterest::ON_WRITE);
-        }
-        else
-        {
-            // All data sent
-            onWriteComplete();
-        }
-    }
-    else
-    {
-        if (errno == EAGAIN && errno == EWOULDBLOCK)
-        {
-            // Socket buffer full. Keep waiting for ON_WRITE.
-            updateIoInterest(SessionInterest::ON_WRITE);
-        }
-        else
-        {
-            INK_ERROR << "Write Error: " << errno;
-            close();
-        }
-    }
-}
-
-void Session::onWriteComplete()
-{
-    _writingResponse = false;
-
-    if (_keepAlive)
-    {
-        _req.reset();
-
-        size_t availableRead;
-        _readBuffer.getReadBuffer(availableRead);
-
-        if (availableRead > 0)
-        {
-            // data is available, parse it immediately
-            // don't need to wait for EPOLLIN
-            read();
-        }
-        else
-        {
-            // No data, wait for EPOLLIN
-            updateIoInterest(SessionInterest::ON_WRITE);
-        }
-    }
-    else
-    {
-        close();
-    }
+    // INK_INFO << ">> " << (int)response.getStatus() << " "
+    //          << (int)_req.method() << " "
+    //          << _req.path() << " "
+    //          << std::fixed << std::setprecision(4) << elapsed.count() << 's';
 }

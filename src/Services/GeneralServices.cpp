@@ -51,14 +51,27 @@ void GeneralServices::registerAllEndpoints()
         // response.setBody("Expected `test_id` param.");
     });
 
+    registerEndpoint("/apibenchmark", Method::POST,
+    [&](const HttpRequest& request, HttpResponse& response)
+    {
+        const auto& body = request.body();
+        response.setBody(body);
+    });
+
     registerEndpoint("/health", Method::GET,
                      [&](const HttpRequest& request, HttpResponse& response)
     {
         // response.setHeader(http::field::content_type, "plain/text");
         auto obj = ink::EnhancedJson();
         obj["status"] = "ok";
-        response.setBody(obj.toPrettyString());
+        // for (auto& header : request.headers())
+        // {
+        //     INK_LOG << header.first << ": " << header.second;
+        // }
+
+        response.setBody(obj.toCompactString());
     });
+
     registerEndpoint("/version", Method::GET,
                      [&](const HttpRequest& request, HttpResponse& response)
     {
