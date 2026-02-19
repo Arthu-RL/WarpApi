@@ -7,6 +7,7 @@
 
 #include "WarpDefs.h"
 #include "Utils/Conversions.h"
+#include "Utils/HeadersList.h"
 
 struct WARP_API RequestData {
     RequestData() :
@@ -18,18 +19,20 @@ struct WARP_API RequestData {
         queryParams({}) {}
 
     Method method;
-    std::string path;
+    std::string_view path;
+    std::string_view query;
     std::string_view version;
-    std::unordered_map<std::string_view, std::string_view> headers;
+    std::unordered_map<i32, std::string_view> headers;
     std::string_view body;
 
     std::unordered_map<std::string, std::string> queryParams;
 
-    void clear()
+    void clear() noexcept
     {
         method = Method::UNKNOWN;
 
-        headers.clear();
+        // headers.fill({});
+        body = {};
         queryParams.clear();
     }
 };
@@ -37,21 +40,45 @@ struct WARP_API RequestData {
 class WARP_API HttpRequest {
 public:
 
-
     explicit HttpRequest() :
         _data()
     {
         // _data.keep_alive(false);
     }
 
-    static Method parseMethod(const std::string_view& method)
+    static Method parseMethod(std::string_view m) noexcept
     {
-        if (method == "GET") return GET;
-        if (method == "POST") return POST;
-        if (method == "PUT") return PUT;
-        if (method == "DELETE") return DELETE;
-        if (method == "HEAD") return HEAD;
-        if (method == "OPTIONS") return OPTIONS;
+        if (m.empty())
+            return UNKNOWN;
+
+        switch (m[0])
+        {
+            case 'G':
+                return GET;
+                break;
+
+            case 'P':
+                switch (m.size())
+                {
+                    case 3: return PUT; break;
+                    case 4: return POST; break;
+                    case 5: return PATCH; break;
+                }
+                break;
+
+            case 'H':
+                return HEAD;
+                break;
+
+            case 'D':
+                return DELETE;
+                break;
+
+            case 'O':
+                return OPTIONS;
+                break;
+        }
+
         return UNKNOWN;
     }
 
@@ -60,19 +87,20 @@ public:
         return _data.method;
     }
 
-    void setMethod(Method method)
+    void setMethod(Method method) noexcept
     {
         _data.method = method;
     }
 
-    const std::string& path() const noexcept
+    const std::string_view& path() const noexcept
     {
         return _data.path;
     }
 
-    void setPath(const std::string_view& path)
+    void setPath(const std::string_view& path, const std::string_view& query)
     {
-        _data.path = std::string(path);
+        _data.path = path;
+        _data.query = query;
     }
 
     const std::string_view body() const noexcept
@@ -80,7 +108,7 @@ public:
         return _data.body;
     }
 
-    void setBody(const std::string_view& buffer)
+    void setBody(const std::string_view& buffer) noexcept
     {
         _data.body = buffer;
     }
@@ -90,29 +118,23 @@ public:
     //     _data.body.append(buffer);
     // }
 
-    const std::unordered_map<std::string_view, std::string_view>& headers() const noexcept
+    const std::unordered_map<i32, std::string_view>& headers() const noexcept
     {
         return _data.headers;
     }
 
-    void addHeader(const char* k, const size_t kLen, const char* v, const size_t vLen)
+    void addHeader(const HeaderType& key, const char* v, const size_t vLen) noexcept
     {
-        _data.headers[std::string_view(k, kLen)] = std::string_view(v, vLen);
+        _data.headers[key] = std::string_view(v, vLen);
     }
 
-    bool hasHeader(const std::string& key) const noexcept
+    const std::string_view getHeader(const HeaderType& key, const std::string& default_value = "") const noexcept
     {
-        return _data.headers.find(key) != _data.headers.end();
-    }
+        auto it = _data.headers.find(static_cast<i32>(key));
+        if (it == _data.headers.end())
+            return default_value;
 
-    const std::string_view& getHeader(const std::string& key, const std::string& dvalue = "") const noexcept
-    {
-        auto it = _data.headers.find(key);
-        if (it != _data.headers.end())
-        {
-            return it->second;
-        }
-        return dvalue;
+        return it->second;
     }
 
     const std::unordered_map<std::string, std::string>& queryParams() const noexcept
@@ -120,43 +142,23 @@ public:
         return _data.queryParams;
     }
 
-    void addQueryParams(const std::string& key, const std::string& value)
-    {
-        std::string target = _data.path;
-        const char delimiter = (target.find('?') == std::string::npos) ? '?' : '&';
-        target += delimiter + Conversions::urlEncode(key) + "=" + Conversions::urlEncode(value);
-        _data.path = target;
-    }
-
     void extractQueryParams()
     {
-        std::string_view target = _data.path;
-
-        size_t queryStart = target.find('?');
-        if (queryStart == std::string::npos)
-            return;
-
-        std::string_view query = target.substr(queryStart+1);
-
-        std::string key, value;
-        std::istringstream queryStream(query.data());
-        while (std::getline(queryStream, key, '&'))
+        std::string_view target = _data.query;
+        while (!target.empty())
         {
-            std::size_t equalPos = key.find('=');
-            if (equalPos != std::string::npos)
-            {
-                value = Conversions::urlDecode(key.substr(equalPos + 1));
-                key = Conversions::urlDecode(key.substr(0, equalPos));
-                _data.queryParams[key] = value;
-            }
-            else
-            {
-                value.clear();
-            }
-        }
+            auto amp = target.find('&');
+            std::string_view part = (amp == std::string_view::npos) ? target : target.substr(0, amp);
+            target = (amp == std::string_view::npos) ? std::string_view{} : target.substr(amp + 1);
 
-        target = target.substr(0, queryStart);
-        _data.path = target;
+            auto eq = part.find('=');
+            std::string_view k = (eq == std::string_view::npos) ? part : part.substr(0, eq);
+            std::string_view v = (eq == std::string_view::npos) ? std::string_view{} : part.substr(eq + 1);
+
+            std::string key = Conversions::urlDecode(k);
+            std::string value = Conversions::urlDecode(v);
+            _data.queryParams[std::move(key)] = std::move(value);
+        }
     }
 
     // bool isChunked() const
@@ -174,7 +176,7 @@ public:
         return _data.version;
     }
 
-    void setVersion(const std::string_view& version)
+    void setVersion(const std::string_view& version) noexcept
     {
         _data.version = std::string(version);
     }
@@ -189,7 +191,7 @@ public:
     //     _req.prepare_payload();
     // }
 
-    void reset()
+    void reset() noexcept
     {
         _data.clear();
     }

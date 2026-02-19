@@ -42,12 +42,12 @@ int main(int /*argc*/, char** /*argv*/)
 
     try {
         // Initialize endpoint manager
-        EndpointManager endpointManager;
+        EndpointManager* endpointManager = EndpointManager::getInstance();
 
         // Register services/endpoints
         GeneralServices generalServices;
 
-        INK_INFO << "Registered endpoints: " << endpointManager.count();
+        INK_INFO << "Registered endpoints: " << endpointManager->count();
 
         // Create and configure the server
         HttpServer server;

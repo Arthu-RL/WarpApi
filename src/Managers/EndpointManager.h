@@ -4,25 +4,28 @@
 #pragma once
 
 #include <memory>
+#include <ink/InkixTree.h>
 
 #include "Endpoint/Endpoint.h"
 
-typedef std::unordered_map<std::string, std::shared_ptr<Endpoint>> EndpointTable;
+using EndpointTable = std::array<ink::InkixTree<std::shared_ptr<Endpoint>>, Method::UNKNOWN + 1>;
 
 class WARP_API EndpointManager
 {
 public:
-    EndpointManager() = default;
-    ~EndpointManager() = default;
+    EndpointManager();
+    ~EndpointManager();
 
-    static void registerEndpoint(std::shared_ptr<Endpoint> endpoint);
+    static EndpointManager* getInstance();
 
-    static std::shared_ptr<Endpoint> getEndpoint(const std::string& endpoint_id);
+    void registerEndpoint(std::shared_ptr<Endpoint> endpoint);
 
-    static uint count();
+    Endpoint* getEndpoint(const Method& method, const std::string_view& route);
+
+    uint count();
 
 private:
-    static EndpointTable _endpoints_map;
+    EndpointTable _endpoints_map;
 };
 
 #endif // ENDPOINTMANAGER_H

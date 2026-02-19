@@ -26,7 +26,7 @@ public:
     {
         std::shared_ptr<Endpoint> endpoint = std::make_shared<Endpoint>(route, method);
         endpoint->setHandlerCallback(reqHandler);
-        EndpointManager::registerEndpoint(endpoint);
+        EndpointManager::getInstance()->registerEndpoint(endpoint);
         _serviceEndpointsCounter++;
     }
 

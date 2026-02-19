@@ -47,10 +47,12 @@ else()
         -O3
         -march=native
         -mtune=native
+        -flto
         -fno-rtti
         -fno-plt
         -ffunction-sections
         -fdata-sections
+        -fomit-frame-pointer
     )
     target_compile_definitions(${PROJECT_NAME} PRIVATE NDEBUG)
 endif()

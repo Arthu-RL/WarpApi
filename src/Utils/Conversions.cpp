@@ -1,54 +1,72 @@
 #include "Conversions.h"
 
 #include <algorithm>
-#include <sstream>
 
 Conversions::Conversions() {}
 
-const std::string Conversions::urlEncode(const std::string_view input)
+std::string Conversions::urlEncode(std::string_view input)
 {
-    std::ostringstream encoded;
+    std::string result;
+    result.reserve(input.size() * 3 / 2);  // ~50% chars need encoding
 
-    for (const char& c : input)
+    static constexpr char hex[] = "0123456789ABCDEF";
+
+    for (char c : input)
     {
-        if (std::isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~')
+        if (std::isalnum(static_cast<unsigned char>(c)) ||
+            c == '-' || c == '_' || c == '.' || c == '~')
         {
-            encoded << c;
+            result += c;
         }
         else
         {
-            encoded << '%' << std::uppercase << std::hex << static_cast<int>(static_cast<unsigned char>(c));
+            result += '%';
+            result += hex[static_cast<unsigned char>(c) >> 4];
+            result += hex[static_cast<unsigned char>(c) & 0xF];
         }
     }
 
-    return encoded.str();
+    return result;
 }
 
-const std::string Conversions::urlDecode(const std::string_view input)
+std::string Conversions::urlDecode(std::string_view input)
 {
-    std::string decoded;
+    std::string result;
+    result.reserve(input.size());
 
-    for (size_t i = 0; i < input.length(); ++i)
-    {
+    static constexpr char hexval[256] = { /* lookup table for 0-9A-Fa-f -> 0-15 */
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,1,2,3,4,5,6,7,8,9,0,0,0,0,0,0,
+        10,11,12,13,14,15,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+        0,10,11,12,13,14,15 // A-F
+    };
+
+    for (size_t i = 0; i < input.size(); ++i) {
         if (input[i] == '%')
         {
-            std::string_view hexValue = input.substr(i + 1, 2);
-            decoded += static_cast<char>(std::stoi(hexValue.data(), nullptr, 16));
-            i += 2;
+            if (i + 2 < input.size())
+            {
+                unsigned char h1 = hexval[static_cast<unsigned char>(input[++i])];
+                unsigned char h2 = hexval[static_cast<unsigned char>(input[++i])];
+                if (h1 < 16 && h2 < 16)
+                {
+                    result += static_cast<char>((h1 << 4) | h2);
+                    continue;
+                }
+            }
         }
         else if (input[i] == '+')
         {
-            decoded += ' ';
+            result += ' ';
         }
         else
         {
-            decoded += input[i];
+            result += input[i];
         }
     }
-
-    return decoded;
+    return result;
 }
-
 
 const bool Conversions::iequals(std::string_view a, std::string_view b) noexcept
 {

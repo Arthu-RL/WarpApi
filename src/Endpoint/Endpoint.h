@@ -4,7 +4,6 @@
 #pragma once
 
 #include "WarpDefs.h"
-#include "Utils/RouteIdentifier.h"
 
 /**
  * The Endpoint class represents a single API endpoint.
@@ -24,20 +23,15 @@ public:
         _handlerCallBack = handlerCallback;
     }
 
-    const std::string id() const
+    const Method& getMethod() const
     {
-        return RouteIdentifier::generateIdentifier(_route, _method);
+        return _method;
     }
 
-    const std::string& getRoute() const
+    const std::string_view getRoute() const
     {
         return _route;
     };
-
-    bool isValid() const
-    {
-        return _route != "";
-    }
 
     void exec(HttpRequest& req, HttpResponse& responseManager)
     {

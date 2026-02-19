@@ -61,7 +61,6 @@ void GeneralServices::registerAllEndpoints()
     registerEndpoint("/health", Method::GET,
                      [&](const HttpRequest& request, HttpResponse& response)
     {
-        // response.setHeader(http::field::content_type, "plain/text");
         auto obj = ink::EnhancedJson();
         obj["status"] = "ok";
         // for (auto& header : request.headers())
@@ -75,8 +74,6 @@ void GeneralServices::registerAllEndpoints()
     registerEndpoint("/version", Method::GET,
                      [&](const HttpRequest& request, HttpResponse& response)
     {
-        response.addHeader("Connection", "keep-alive");
-
         auto obj = ink::EnhancedJson();
         obj["major"] = 1;
         obj["patch"] = 0;

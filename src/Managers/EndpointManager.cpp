@@ -1,24 +1,34 @@
 #include "EndpointManager.h"
 
-EndpointTable EndpointManager::_endpoints_map;
+EndpointManager::EndpointManager() : _endpoints_map({})
+{
+
+};
+
+EndpointManager::~EndpointManager()
+{
+
+}
+
+EndpointManager* EndpointManager::getInstance()
+{
+    static EndpointManager instance;
+    return &instance;
+}
 
 void EndpointManager::registerEndpoint(std::shared_ptr<Endpoint> endpoint)
 {
-    const std::string endpoint_id = endpoint->id();
+    auto& tree = _endpoints_map[endpoint->getMethod()];
 
-    if (_endpoints_map.find(endpoint_id) != _endpoints_map.end())
-        throw std::runtime_error("Endpoints with equivalent ids (path:method) are forbidden. Hint: "+endpoint_id);
+    if (tree.get(endpoint->getRoute()) != nullptr)
+        throw std::runtime_error("Endpoints with equivalent method, or, path is forbidden. Hint: "+std::to_string((u32)endpoint->getMethod())+':'+std::string(endpoint->getRoute().data()));
 
-    _endpoints_map[endpoint_id] = endpoint;
+    tree.insert(endpoint->getRoute(), endpoint);
 }
 
-std::shared_ptr<Endpoint> EndpointManager::getEndpoint(const std::string& endpoint_id)
+Endpoint* EndpointManager::getEndpoint(const Method& method, const std::string_view& route)
 {
-    const auto& it = _endpoints_map.find(endpoint_id);
-    if (it != _endpoints_map.end())
-        return it->second;
-
-    return nullptr;
+    return _endpoints_map[method].get(route)->get();
 }
 
 uint EndpointManager::count()

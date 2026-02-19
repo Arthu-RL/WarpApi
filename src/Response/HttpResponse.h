@@ -3,11 +3,11 @@
 
 #pragma once
 
-#include <charconv>
 #include <array>
 #include <ink/RingBuffer.h>
 
-#include "WarpDefs.h"
+#include "Utils/StringUtils.h"
+#include "Utils/HeadersList.h"
 
 inline bool writeAll(ink::RingBuffer& rb, const char* data, size_t len)
 {
@@ -30,7 +30,7 @@ struct WARP_API HttpResponseData {
 
     int status;
     std::string_view version;
-    std::array<Header, MAX_HEADERS_SIZE> headers;
+    std::array<std::string_view, MAX_HEADERS_SIZE> headers;
     u32 header_count = 0;
 
     ink::RingBuffer* body;
@@ -44,44 +44,51 @@ public:
     int getStatus() { return _data.status; }
     void setStatus(int status) { _data.status = status; }
     void setVersion(const std::string_view version) { _data.version = version; }
-    void addHeader(const std::string& key, const std::string& value) {
+    void addHeader(const HeaderType key, const std::string_view& value) {
         if (_data.header_count >= _data.headers.size()) throw std::out_of_range("Too many headers");
-        _data.headers[_data.header_count++] = Header{key, value};
+        _data.headers[_data.header_count++] = value;
     }
     void initBody(ink::RingBuffer* writeBufferPtr) { _data.body = writeBufferPtr; }
     void setBody(const std::string_view body)
     {
-        addHeader("Content-Length", std::to_string(body.length()));
-
+        char numBuf[24];
         ink::RingBuffer& out = *_data.body;
 
-        auto write = [&](std::string_view sv) {
+        auto write = [&](std::string_view sv)
+        {
+            if (sv.empty()) return true;
             return writeAll(out, sv.data(), sv.size());
         };
-
-        char statusBuf[4];
-        auto [ptr, ec] = std::to_chars(statusBuf, statusBuf + sizeof(statusBuf), _data.status);
-        size_t statusLen = ptr - statusBuf;
 
         // Status line
         write(_data.version);
         write(" ");
-        write({statusBuf, statusLen});
+        write(StringUtils::fast_itoa(numBuf, sizeof(numBuf), _data.status));
         write(" ");
         write(statusText(_data.status));
         write("\r\n");
 
         // Headers
-        for (u32 i = 0; i < _data.header_count; ++i) {
-            const Header& h = _data.headers[i];
-            write(h.key);
+        for (u32 i = 0; i < _data.header_count; ++i)
+        {
+            std::string_view value = _data.headers[i];
+
+            write(HeaderStrings[i]);
             write(": ");
-            write(h.value);
+            write(value);
             write("\r\n");
         }
 
-        // Separator + body
+        // Write ContentLength explicitily
+        write(HeaderStrings[HeaderType::ContentLength]);
+        write(": ");
+        write(StringUtils::fast_itoa(numBuf, sizeof(numBuf), body.length()));
         write("\r\n");
+
+        // Headers section sep
+        write("\r\n");
+
+        // body
         write(body);
     }
 

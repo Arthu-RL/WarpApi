@@ -10,11 +10,13 @@ EventLoop::EventLoop() :
 {
 }
 
-EventLoop::~EventLoop() {
+EventLoop::~EventLoop()
+{
     stop();
 }
 
-void EventLoop::start() {
+void EventLoop::start()
+{
     if (_running) return;
     _running = true;
 
@@ -33,7 +35,8 @@ void EventLoop::start() {
     INK_INFO << "EventLoop started with " << max_threads << " independent listeners.";
 }
 
-void EventLoop::stop() {
+void EventLoop::stop()
+{
     if (!_running) return;
     _running = false;
 
@@ -44,7 +47,8 @@ void EventLoop::stop() {
     INK_DEBUG << "EventLoop stopped";
 }
 
-void EventLoop::runWorker(i32 threadIdx) {
+void EventLoop::runWorker(i32 threadIdx)
+{
     int listenFd = socket(AF_INET, SOCK_STREAM, 0);
     if (listenFd < 0)
     {
@@ -69,13 +73,15 @@ void EventLoop::runWorker(i32 threadIdx) {
     addr.sin_addr.s_addr = INADDR_ANY;
     addr.sin_port = htons(settings.port);
 
-    if (bind(listenFd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+    if (bind(listenFd, (struct sockaddr*)&addr, sizeof(addr)) < 0)
+    {
         INK_ERROR << "Thread " << threadIdx << " bind failed: " << strerror(errno);
         close(listenFd);
         return;
     }
 
-    if (listen(listenFd, settings.backlog_size) < 0) {
+    if (listen(listenFd, settings.backlog_size) < 0)
+    {
         INK_ERROR << "Thread " << threadIdx << " listen failed";
         close(listenFd);
         return;

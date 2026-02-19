@@ -2,130 +2,17 @@
 
 #include <ink/LastWish.h>
 #include <ink/utils.h>
-#include <emmintrin.h>
 
 #include "EventLoop/EventLoop.h"
 #include "Managers/EndpointManager.h"
 #include "Response/HttpResponse.h"
-#include "Utils/RouteIdentifier.h"
+#include "Utils/StringUtils.h"
 #include "Settings/Settings.h"
 
-constexpr uint32_t fnv1a_hash(const char* str, size_t len) {
-    uint32_t hash = 2166136261u;
-    for (size_t i = 0; i < len; ++i) {
-        char c = str[i];
-        if (c >= 'A' && c <= 'Z') c += 32;
-        hash ^= static_cast<uint8_t>(c);
-        hash *= 16777619u;
-    }
-    return hash;
-}
-
-constexpr uint32_t HASH_CONNECTION = fnv1a_hash("connection", 10);
-constexpr uint32_t HASH_CONTENT_LENGTH = fnv1a_hash("content-length", 14);
-constexpr uint32_t HASH_HOST = fnv1a_hash("host", 4);
-constexpr uint32_t HASH_USER_AGENT = fnv1a_hash("user-agent", 10);
-
-inline uint32_t hashHeaderName(const char* str, size_t len) {
-    uint32_t hash = 2166136261u;
-    for (size_t i = 0; i < len; ++i) {
-        char c = str[i];
-        if (c >= 'A' && c <= 'Z') c += 32;
-        hash ^= static_cast<uint8_t>(c);
-        hash *= 16777619u;
-    }
-    return hash;
-}
-
-inline const char* find_crlf(const char* data, const char* end) {
-    const char* p = data;
-
-#if defined(__SSE2__) || defined(_M_X64) || defined(_M_IX86_FP)
-    if (end - p >= 16) {
-        const __m128i cr = _mm_set1_epi8('\r');
-
-        while (end - p >= 16) {
-            __m128i chunk = _mm_loadu_si128(
-                reinterpret_cast<const __m128i*>(p));
-
-            __m128i cmp = _mm_cmpeq_epi8(chunk, cr);
-            int mask = _mm_movemask_epi8(cmp);
-
-            if (mask) {
-                return p + __builtin_ctz(mask);
-            }
-            p += 16;
-        }
-    }
-#endif
-
-    // Scalar tail
-    while (p < end) {
-        if (*p == '\r')
-            return p;
-        ++p;
-    }
-
-    return nullptr;
-}
-
-inline bool is_crlf(const char* p, const char* end) {
-    return (p + 1 < end) && (p[0] == '\r') && (p[1] == '\n');
-}
-
-inline bool is_header_end(const char* p, const char* end) {
-    return (p + 3 < end) &&
-           (p[0] == '\r') && (p[1] == '\n') &&
-           (p[2] == '\r') && (p[3] == '\n');
-}
-
-inline bool iequals_small(std::string_view a, std::string_view b) {
-    if (a.size() != b.size()) return false;
-
-    const char* pa = a.data();
-    const char* pb = b.data();
-    size_t len = a.size();
-
-    // Unroll loop for common cases
-    switch (len) {
-    case 10: // "keep-alive"
-        if ((pa[0] | 32) != (pb[0] | 32)) return false;
-        if ((pa[1] | 32) != (pb[1] | 32)) return false;
-        if ((pa[2] | 32) != (pb[2] | 32)) return false;
-        if ((pa[3] | 32) != (pb[3] | 32)) return false;
-        if ((pa[4] | 32) != (pb[4] | 32)) return false;
-        if ((pa[5] | 32) != (pb[5] | 32)) return false;
-        if ((pa[6] | 32) != (pb[6] | 32)) return false;
-        if ((pa[7] | 32) != (pb[7] | 32)) return false;
-        if ((pa[8] | 32) != (pb[8] | 32)) return false;
-        if ((pa[9] | 32) != (pb[9] | 32)) return false;
-        return true;
-
-    case 5: // "close"
-        if ((pa[0] | 32) != (pb[0] | 32)) return false;
-        if ((pa[1] | 32) != (pb[1] | 32)) return false;
-        if ((pa[2] | 32) != (pb[2] | 32)) return false;
-        if ((pa[3] | 32) != (pb[3] | 32)) return false;
-        if ((pa[4] | 32) != (pb[4] | 32)) return false;
-        return true;
-
-    default:
-        for (size_t i = 0; i < len; ++i) {
-            if ((pa[i] | 32) != (pb[i] | 32)) return false;
-        }
-        return true;
-    }
-}
-
-inline size_t fast_atoi(const char* str, size_t len) {
-    size_t result = 0;
-    for (size_t i = 0; i < len; ++i) {
-        char c = str[i];
-        if (c < '0' || c > '9') break;
-        result = result * 10 + (c - '0');
-    }
-    return result;
-}
+static constexpr u32 HASH_CONNECTION = StringUtils::fnv1a_hash("connection", 10);
+static constexpr u32 HASH_CONTENT_LENGTH = StringUtils::fnv1a_hash("content-length", 14);
+static constexpr u32 HASH_HOST = StringUtils::fnv1a_hash("host", 4);
+static constexpr u32 HASH_USER_AGENT = StringUtils::fnv1a_hash("user-agent", 10);
 
 Session::Session(socket_t socket, socket_t assignedEpollFd) :
     _socket(socket),
@@ -292,11 +179,11 @@ bool Session::parseRequest()
     if (__builtin_expect(!data || avail < MIN_REQUEST_SIZE, 0))
         return false;
 
-    const char* p   = data;
+    const char* p = data;
     const char* end = data + avail;
 
     // REQUEST LINE
-    const char* lineEnd = find_crlf(p, end);
+    const char* lineEnd = StringUtils::find_crlf(p, end);
     if (__builtin_expect(!lineEnd || lineEnd + 1 >= end || lineEnd[1] != '\n', 0))
         return false;
 
@@ -309,18 +196,35 @@ bool Session::parseRequest()
 
     // PATH
     const char* pathStart = methodEnd + 1;
-    const char* pathEnd   = pathStart;
-    while (pathEnd < lineEnd && *pathEnd != ' ') ++pathEnd;
+    const char* pathEnd = pathStart;
+    while (pathEnd < lineEnd && *pathEnd != '?' && *pathEnd != ' ') ++pathEnd;
     if (__builtin_expect(pathEnd == lineEnd, 0)) return false;
 
     std::string_view path(pathStart, pathEnd - pathStart);
 
+    const char* queryStart = nullptr;
+    const char* queryEnd = nullptr;
+    if (*pathEnd == '?')
+    {
+        queryStart = pathEnd + 1;
+        queryEnd = queryStart;
+        while (queryEnd < lineEnd && *queryEnd != ' ') ++queryEnd;
+        if (__builtin_expect(queryEnd == lineEnd, 0)) return false;
+    }
+    else
+    {
+        queryStart = pathEnd;
+        queryEnd = pathEnd;
+    }
+
+    std::string_view query(queryStart, queryEnd - queryStart);
+
     // VERSION
-    const char* verStart = pathEnd + 1;
+    const char* verStart = queryEnd + 1;
     std::string_view version(verStart, lineEnd - verStart);
 
     _req.setMethod(HttpRequest::parseMethod(method));
-    _req.setPath(path);
+    _req.setPath(path, query);
     _req.setVersion(version);
 
     p = lineEnd + 2; // skip CRLF
@@ -339,7 +243,7 @@ bool Session::parseRequest()
             break;
         }
 
-        const char* hEnd = find_crlf(p, end);
+        const char* hEnd = StringUtils::find_crlf(p, end);
         if (__builtin_expect(!hEnd || hEnd + 1 >= end || hEnd[1] != '\n', 0))
         {
             return false;
@@ -357,7 +261,7 @@ bool Session::parseRequest()
             continue;
         }
 
-        const char* k = p;
+        // const char* k = p;
         size_t klen = colon - p;
 
         const char* v = colon + 1;
@@ -367,37 +271,33 @@ bool Session::parseRequest()
         }
         size_t vlen = hEnd - v;
 
-        // hash
-        uint32_t h = 2166136261u;
-        for (const char* s = k; s < k + klen; ++s)
-        {
-            h ^= uint8_t(*s | 32);
-            h *= 16777619u;
-        }
+        HeaderType key = HeaderType::COUNT;
 
-        switch (h)
+        switch (klen)
         {
-        case HASH_CONNECTION:
-            if (klen == 10)
-            {
-                _keepAlive = iequals_small(std::string_view(v, vlen), "keep-alive");
-            }
-            break;
-
-        case HASH_CONTENT_LENGTH:
-            if (klen == 14)
-            {
-                contentLength = fast_atoi(v, vlen);
+            case 10: // Connection
+                if (vlen == 10)
+                {
+                    _keepAlive = true;
+                }
+                else
+                {
+                    _keepAlive = false;
+                }
+                key = HeaderType::Connection;
+                break;
+            case 14: // Content-Length
+                contentLength = StringUtils::fast_atoi(v, vlen);
                 hasContentLen = true;
                 if (contentLength > Settings::getSettings().max_body_size)
                 {
                     return false;
                 }
-            }
-            break;
+                key = HeaderType::ContentLength;
+                break;
         }
 
-        _req.addHeader(k, klen, v, vlen);
+        _req.addHeader(key, v, vlen);
         p = hEnd + 2;
     }
 
@@ -427,22 +327,26 @@ void Session::handleRequest()
     // auto start = std::chrono::high_resolution_clock::now();
 
     HttpResponse response;
-    response.setVersion("HTTP/1.1");
-    response.addHeader("Server", "WarpApi/1.0");
+    response.setVersion(HTTP_VERSION);
+    response.addHeader(HeaderType::Server, APP_INFO_HEADER);
     response.initBody(&_writeBuffer);
 
-    try {
-        _req.extractQueryParams();
-        const std::string endpoint_id = RouteIdentifier::generateIdentifier(_req.path(), _req.method());
-        auto endpoint = EndpointManager::getEndpoint(endpoint_id);
+    try
+    {
+        Endpoint* endpoint = EndpointManager::getInstance()->getEndpoint(_req.method(), _req.path());
 
-        if (endpoint != nullptr) {
+        if (endpoint != nullptr)
+        {
             endpoint->exec(_req, response);
-        } else {
+        }
+        else
+        {
             response.setStatus(StatusCode::not_found);
             response.setBody("Endpoint not found.");
         }
-    } catch (const std::exception& e) {
+    }
+    catch (const std::exception& e)
+    {
         response.setStatus(StatusCode::internal_server_error);
         response.setBody("Internal Server error: " + std::string(e.what()));
     }
@@ -450,12 +354,11 @@ void Session::handleRequest()
     // Set Connection header based on keep-alive
     if (_keepAlive)
     {
-        response.addHeader("Connection", "keep-alive");
-        // response.addHeader("Keep-Alive", "timeout=5, max=100");
+        response.addHeader(HeaderType::Connection, KEEP_ALIVE_HEADER);
     }
     else
     {
-        response.addHeader("Connection", "close");
+        response.addHeader(HeaderType::Connection, CLOSE_CONN_HEADER);
     }
 
     // auto end = std::chrono::high_resolution_clock::now();
