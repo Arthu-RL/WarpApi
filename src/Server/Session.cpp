@@ -9,11 +9,6 @@
 #include "Utils/StringUtils.h"
 #include "Settings/Settings.h"
 
-static constexpr u32 HASH_CONNECTION = StringUtils::fnv1a_hash("connection", 10);
-static constexpr u32 HASH_CONTENT_LENGTH = StringUtils::fnv1a_hash("content-length", 14);
-static constexpr u32 HASH_HOST = StringUtils::fnv1a_hash("host", 4);
-static constexpr u32 HASH_USER_AGENT = StringUtils::fnv1a_hash("user-agent", 10);
-
 Session::Session(socket_t socket, socket_t assignedEpollFd) :
     _socket(socket),
     _assignedEpollFd(assignedEpollFd),

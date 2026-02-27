@@ -12,7 +12,7 @@
 // Forward decl
 struct epoll_event;
 
-class WARP_API Session : public ink::TimerNode, public std::enable_shared_from_this<Session> {
+class WARP_API alignas(32) Session : public ink::TimerNode {
 public:
     // Remove EventLoop* from constructor
     explicit Session(socket_t socket, socket_t assignedEpollFd);

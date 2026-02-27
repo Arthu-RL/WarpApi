@@ -91,17 +91,29 @@ void EventLoop::runWorker(i32 threadIdx)
     int epfd = epoll_create1(0);
 
     // Add Listener to Epoll
+    void* LISTENER_KEY = &listenFd; // dummy ptr for listener
+
     struct epoll_event ev;
+    ev.data.ptr = LISTENER_KEY;
     ev.events = EPOLLIN | EPOLLET;
-    ev.data.fd = listenFd;
     epoll_ctl(epfd, EPOLL_CTL_ADD, listenFd, &ev);
 
     ink::TimerWheel timerWheel(60);
 
     // Using one session table per thread if lazy routine
     // Using Vector for O(1) access instead of Map
-    std::vector<std::shared_ptr<Session>> sessionsTable;
-    sessionsTable.resize(MAX_EVENTS);
+    ObjectPool<Session, 1024> sessionPool;
+
+    auto releaseSession = [&](Session* s) {
+        if (!s) return;
+
+        timerWheel.unlink(s);
+
+        epoll_ctl(epfd, EPOLL_CTL_DEL, s->getSocket(), nullptr);
+
+        s->close();
+        sessionPool.release(s);
+    };
 
     struct epoll_event events[MAX_EVENTS];
 
@@ -114,10 +126,10 @@ void EventLoop::runWorker(i32 threadIdx)
 
         for (int i = 0; i < nfds; ++i)
         {
-            int fd = events[i].data.fd;
+            void* ptr = events[i].data.ptr;
             uint32_t evs = events[i].events;
 
-            if (fd == listenFd)
+            if (ptr == LISTENER_KEY)
             {
                 while (true)
                 {
@@ -126,64 +138,50 @@ void EventLoop::runWorker(i32 threadIdx)
                         SOCK_NONBLOCK | SOCK_CLOEXEC
                     );
 
-                    if (clientSock < 0)
-                    {
-                        if (errno == EAGAIN || errno == EWOULDBLOCK)
-                            break;
-                        continue;
-                    }
+                    if (clientSock < 0) break;
 
-                    auto session = std::make_shared<Session>(clientSock, epfd);
-
-                    if (clientSock >= (int)sessionsTable.size())
-                    {
-                        sessionsTable.resize(clientSock * 2);
-                    }
-
-                    sessionsTable[clientSock] = session;
+                    Session* session = sessionPool.acquire();
+                    new (session) Session(clientSock, epfd);
 
                     epoll_event ev{};
-                    ev.data.fd = clientSock;
+                    ev.data.ptr = session;
                     ev.events = EPOLLIN | EPOLLET;
                     epoll_ctl(epfd, EPOLL_CTL_ADD, clientSock, &ev);
                 }
                 continue;
             }
-
-            auto& session = sessionsTable[fd];
-            if (!session)
+            else
             {
-                epoll_ctl(epfd, EPOLL_CTL_DEL, fd, nullptr);
-                continue;
+                Session* session = static_cast<Session*>(ptr);
+
+                // null session we continue
+                if (!session) continue;
+
+                bool activity = false;
+                // read
+                if (evs & (EPOLLIN | EPOLLRDHUP))
+                    activity |= session->onReadReady();
+
+                // write
+                if (session->getSocket() != SOCKET_ERROR_VALUE && (evs & EPOLLOUT))
+                    activity |= session->onWriteReady();
+
+                // We DO NOT close on RDHUP here, because we might still be sending the response (Half-Close).
+                if (evs & (EPOLLERR | EPOLLHUP)) {
+                    releaseSession(session);
+                    continue;
+                }
+
+                if (activity)
+                    timerWheel.update(session);
             }
-
-            bool activity = false;
-            // read
-            if (evs & (EPOLLIN | EPOLLRDHUP))
-                activity |= session->onReadReady();
-
-            // write
-            if (session->getSocket() != SOCKET_ERROR_VALUE && (evs & EPOLLOUT))
-                activity |= session->onWriteReady();
-
-            // We DO NOT close on RDHUP here, because we might still be sending the response (Half-Close).
-            if (evs & (EPOLLERR | EPOLLHUP))
-            {
-                timerWheel.unlink(session.get());
-                session->close();
-                sessionsTable[fd].reset();
-                continue;
-            }
-
-            if (activity)
-                timerWheel.update(session.get());
         }
 
         if (timerWheel.timeToNextTickMillis() == 0)
         {
             timerWheel.processExpired([&](ink::TimerNode* n) {
                 Session* s = static_cast<Session*>(n);
-                s->close();
+                releaseSession(s);
             });
         }
     }
