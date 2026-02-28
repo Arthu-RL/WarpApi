@@ -5,7 +5,6 @@
 
 #include <ink/RingBuffer.h>
 #include <ink/TimerWheel.h>
-#include <memory>
 #include "WarpDefs.h"
 #include "Request/HttpRequest.h"
 

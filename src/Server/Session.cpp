@@ -50,7 +50,7 @@ bool Session::onReadReady()
     {
         size_t availableSpace;
         char* buf = _readBuffer.getWriteBuffer(availableSpace);
-        if (!buf || availableSpace == 0)
+        if (availableSpace == 0)
         {
             close();
             return true;
@@ -100,8 +100,7 @@ bool Session::onWriteReady()
         size_t available;
         const char* readBuf = _writeBuffer.getReadBuffer(available);
 
-        if (!readBuf || available == 0)
-            break;
+        if (available == 0) break;
 
         ssize_t bytesSent = send(_socket, readBuf, available, 0);
         // INK_TRACE << "Wrote " << bytesSent << " response: \n" << readBuf;

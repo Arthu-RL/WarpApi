@@ -108,10 +108,10 @@ void EventLoop::runWorker(i32 threadIdx)
         if (!s) return;
 
         timerWheel.unlink(s);
-
         epoll_ctl(epfd, EPOLL_CTL_DEL, s->getSocket(), nullptr);
-
         s->close();
+
+        s->~Session();
         sessionPool.release(s);
     };
 
@@ -122,7 +122,10 @@ void EventLoop::runWorker(i32 threadIdx)
     while (_running)
     {
         int timeout = timerWheel.timeToNextTickMillis();
+
+        // INK_DEBUG << "[Loop] Calling epoll_wait with timeout: " << timeout << "ms";
         int nfds = epoll_wait(epfd, events, MAX_EVENTS, timeout);
+        // INK_DEBUG << "[Loop] epoll_wait returned " << nfds << " events.";
 
         for (int i = 0; i < nfds; ++i)
         {
@@ -131,17 +134,31 @@ void EventLoop::runWorker(i32 threadIdx)
 
             if (ptr == LISTENER_KEY)
             {
+                // INK_DEBUG << "[Listener] Incoming connection event triggered.";
                 while (true)
                 {
                     int clientSock = accept4(
                         listenFd, nullptr, nullptr,
                         SOCK_NONBLOCK | SOCK_CLOEXEC
-                    );
+                        );
 
-                    if (clientSock < 0) break;
+                    if (clientSock < 0)
+                    {
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                            INK_DEBUG << "[Listener] EAGAIN reached. Done accepting.";
+                            break;
+                        }
+                        INK_DEBUG << "[Listener] Accept Error: " << strerror(errno);
+                        continue;
+                    }
 
                     Session* session = sessionPool.acquire();
                     new (session) Session(clientSock, epfd);
+
+                    INK_DEBUG << "[Listener] Accepted FD: " << clientSock
+                              << " | Assigned Session Ptr: " << session;
+
+                    timerWheel.update(session);
 
                     epoll_event ev{};
                     ev.data.ptr = session;
@@ -154,33 +171,51 @@ void EventLoop::runWorker(i32 threadIdx)
             {
                 Session* session = static_cast<Session*>(ptr);
 
-                // null session we continue
-                if (!session) continue;
+                if (!session) {
+                    INK_DEBUG << "[Client] WARNING: Epoll returned null session pointer!";
+                    continue;
+                }
+
+                INK_DEBUG << "[Client] Event on Session Ptr: " << session
+                          << " | FD: " << session->getSocket()
+                          << " | Events mask: " << evs;
 
                 bool activity = false;
-                // read
-                if (evs & (EPOLLIN | EPOLLRDHUP))
+
+                // Read
+                if (evs & (EPOLLIN | EPOLLRDHUP)) {
+                    INK_DEBUG << "[Client] Triggering onReadReady() for FD: " << session->getSocket();
                     activity |= session->onReadReady();
+                }
 
-                // write
-                if (session->getSocket() != SOCKET_ERROR_VALUE && (evs & EPOLLOUT))
+                // Write
+                if (evs & EPOLLOUT) {
+                    // INK_DEBUG << "[Client] Triggering onWriteReady() for FD: " << session->getSocket();
                     activity |= session->onWriteReady();
+                }
 
-                // We DO NOT close on RDHUP here, because we might still be sending the response (Half-Close).
+                // INK_DEBUG << "[Client] Activity detected: " << (activity ? "True" : "False");
+
+                // Error / Hangup
                 if (evs & (EPOLLERR | EPOLLHUP)) {
+                    // INK_DEBUG << "[Client] EPOLLERR or EPOLLHUP detected on FD: " << session->getSocket() << ". Releasing.";
                     releaseSession(session);
                     continue;
                 }
 
-                if (activity)
+                if (activity) {
+                    INK_DEBUG << "[Client] Updating timer wheel for Session Ptr: " << session;
                     timerWheel.update(session);
+                }
             }
         }
 
         if (timerWheel.timeToNextTickMillis() == 0)
         {
+            // INK_DEBUG << "[Timer] Tick reached zero. Processing expired sessions.";
             timerWheel.processExpired([&](ink::TimerNode* n) {
                 Session* s = static_cast<Session*>(n);
+                INK_DEBUG << "[Timer] Session expired. Ptr: " << s << " | FD: " << s->getSocket();
                 releaseSession(s);
             });
         }

@@ -22,8 +22,19 @@ void signalHandler(int signal) {
     exit(signal);
 }
 
+void increase_fd_limit(uint64_t limit) {
+    struct rlimit rl;
+    rl.rlim_cur = limit; // Soft limit
+    rl.rlim_max = limit; // Hard limit
+    if (setrlimit(RLIMIT_NOFILE, &rl) != 0) {
+        perror("setrlimit failed");
+    }
+}
+
 int main(int /*argc*/, char** /*argv*/)
 {
+    increase_fd_limit(1000000);
+
     // Initialize logger
     INK_CORE_LOGGER->setName("WarpAPI");
     ink::LogManager::getInstance().setGlobalLevel(logSeverity);
