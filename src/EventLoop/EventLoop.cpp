@@ -91,33 +91,36 @@ void EventLoop::runWorker(i32 threadIdx)
     int epfd = epoll_create1(0);
 
     // Add Listener to Epoll
-    void* LISTENER_KEY = &listenFd; // dummy ptr for listener
-
     struct epoll_event ev;
-    ev.data.ptr = LISTENER_KEY;
+    ev.data.fd = listenFd;
     ev.events = EPOLLIN | EPOLLET;
     epoll_ctl(epfd, EPOLL_CTL_ADD, listenFd, &ev);
 
+    // TimerWheel that marks n seconds until session expires
+    // handling keep alives sessions
     ink::TimerWheel timerWheel(60);
 
-    // Using one session table per thread if lazy routine
+    // ObjectPool to reduce session allocation
+    ObjectPool<Session, MAX_EVENTS> sessionPool;
+
+    // Using one session table per thread
     // Using Vector for O(1) access instead of Map
-    ObjectPool<Session, 1024> sessionPool;
+    std::vector<Session*> sessionTable;
+    sessionTable.resize(MAX_EVENTS);
 
     auto releaseSession = [&](Session* s) {
         if (!s) return;
 
         timerWheel.unlink(s);
         epoll_ctl(epfd, EPOLL_CTL_DEL, s->getSocket(), nullptr);
-        s->close();
-
         s->~Session();
+
         sessionPool.release(s);
     };
 
     struct epoll_event events[MAX_EVENTS];
 
-    INK_DEBUG << "Thread " << threadIdx << " listening on port " << settings.port;
+    INK_INFO << "Thread " << threadIdx << " listening on port " << settings.port;
 
     while (_running)
     {
@@ -129,12 +132,11 @@ void EventLoop::runWorker(i32 threadIdx)
 
         for (int i = 0; i < nfds; ++i)
         {
-            void* ptr = events[i].data.ptr;
+            socket_t fd = events[i].data.fd;
             uint32_t evs = events[i].events;
 
-            if (ptr == LISTENER_KEY)
+            if (fd == listenFd)
             {
-                // INK_DEBUG << "[Listener] Incoming connection event triggered.";
                 while (true)
                 {
                     int clientSock = accept4(
@@ -155,67 +157,54 @@ void EventLoop::runWorker(i32 threadIdx)
                     Session* session = sessionPool.acquire();
                     new (session) Session(clientSock, epfd);
 
-                    INK_DEBUG << "[Listener] Accepted FD: " << clientSock
-                              << " | Assigned Session Ptr: " << session;
+                    if (clientSock >= (int)sessionTable.size())
+                    {
+                        sessionTable.resize(clientSock * 2);
+                    }
 
-                    timerWheel.update(session);
+                    sessionTable[clientSock] = session;
 
                     epoll_event ev{};
-                    ev.data.ptr = session;
+                    ev.data.fd = clientSock;
                     ev.events = EPOLLIN | EPOLLET;
                     epoll_ctl(epfd, EPOLL_CTL_ADD, clientSock, &ev);
                 }
                 continue;
             }
-            else
+
+            Session* session = sessionTable[fd];
+
+            bool activity = false;
+
+            // Read
+            if (evs & (EPOLLIN | EPOLLRDHUP))
             {
-                Session* session = static_cast<Session*>(ptr);
+                activity |= session->onReadReady();
+            }
 
-                if (!session) {
-                    INK_DEBUG << "[Client] WARNING: Epoll returned null session pointer!";
-                    continue;
-                }
+            // Write
+            if (session->getSocket() != SOCKET_ERROR_VALUE && (evs & EPOLLOUT))
+            {
+                activity |= session->onWriteReady();
+            }
 
-                INK_DEBUG << "[Client] Event on Session Ptr: " << session
-                          << " | FD: " << session->getSocket()
-                          << " | Events mask: " << evs;
+            // Error / Hangup
+            if (evs & (EPOLLERR | EPOLLHUP))
+            {
+                releaseSession(session);
+                continue;
+            }
 
-                bool activity = false;
-
-                // Read
-                if (evs & (EPOLLIN | EPOLLRDHUP)) {
-                    INK_DEBUG << "[Client] Triggering onReadReady() for FD: " << session->getSocket();
-                    activity |= session->onReadReady();
-                }
-
-                // Write
-                if (evs & EPOLLOUT) {
-                    // INK_DEBUG << "[Client] Triggering onWriteReady() for FD: " << session->getSocket();
-                    activity |= session->onWriteReady();
-                }
-
-                // INK_DEBUG << "[Client] Activity detected: " << (activity ? "True" : "False");
-
-                // Error / Hangup
-                if (evs & (EPOLLERR | EPOLLHUP)) {
-                    // INK_DEBUG << "[Client] EPOLLERR or EPOLLHUP detected on FD: " << session->getSocket() << ". Releasing.";
-                    releaseSession(session);
-                    continue;
-                }
-
-                if (activity) {
-                    INK_DEBUG << "[Client] Updating timer wheel for Session Ptr: " << session;
-                    timerWheel.update(session);
-                }
+            if (activity)
+            {
+                timerWheel.update(session);
             }
         }
 
         if (timerWheel.timeToNextTickMillis() == 0)
         {
-            // INK_DEBUG << "[Timer] Tick reached zero. Processing expired sessions.";
             timerWheel.processExpired([&](ink::TimerNode* n) {
                 Session* s = static_cast<Session*>(n);
-                INK_DEBUG << "[Timer] Session expired. Ptr: " << s << " | FD: " << s->getSocket();
                 releaseSession(s);
             });
         }
