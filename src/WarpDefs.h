@@ -3,15 +3,6 @@
 
 #pragma once
 
-// Platform-specific includes
-#ifdef _WIN32
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#include <windows.h>
-#pragma comment(lib, "ws2_32.lib")
-typedef SOCKET socket_t;
-#define SOCKET_ERROR_VALUE INVALID_SOCKET
-#else
 #include <sys/socket.h>
 #include <sys/resource.h>
 #include <netinet/in.h>
@@ -19,13 +10,11 @@ typedef SOCKET socket_t;
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <liburing.h>
 #include <sys/epoll.h>
-#ifdef __linux__
-#include <sys/eventfd.h> // For eventfd
-#endif
+
 typedef int socket_t;
 #define SOCKET_ERROR_VALUE -1
-#endif
 
 #include <ink/ink.hpp>
 

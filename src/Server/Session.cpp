@@ -56,7 +56,7 @@ bool Session::onReadReady()
             return true;
         }
 
-        ssize_t bytesRead = recv(_socket, buf, availableSpace, 0);
+        ssize_t bytesRead = io_uring_prep_recv(_socket, buf, availableSpace, 0);
         if (bytesRead > 0)
         {
             read = true;
@@ -102,7 +102,7 @@ bool Session::onWriteReady()
 
         if (available == 0) break;
 
-        ssize_t bytesSent = send(_socket, readBuf, available, 0);
+        ssize_t bytesSent = io_uring_prep_send(_socket, readBuf, available, 0);
         // INK_TRACE << "Wrote " << bytesSent << " response: \n" << readBuf;
 
         if (bytesSent > 0)

@@ -71,9 +71,9 @@ bool Settings::loadSettings(const ink::EnhancedJson& configs, SettingsData& data
                                     std::thread::hardware_concurrency());
         data.backlog_size = configs.get<size_t>("backlog_size", SOMAXCONN);
         data.connection_timeout_ms = configs.get<size_t>("connection_timeout_ms", 60000);
-        data.max_body_size = configs.get<size_t>("max_body_size", 1 * 1024 * 1024);
-        data.max_request_size = configs.get<size_t>("max_body_size", 1 * 1024 * 1024);
-        data.max_response_size = configs.get<size_t>("max_body_size", 1 * 1024 * 1024);
+        data.max_body_size = configs.get<size_t>("max_body_size", 4 * 1024 * 1024);
+        data.max_request_size = configs.get<size_t>("max_request_size", 4 * 1024 * 1024);
+        data.max_response_size = configs.get<size_t>("max_response_size", 4 * 1024 * 1024);
 
         return true;
     }

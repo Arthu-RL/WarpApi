@@ -139,7 +139,7 @@ void EventLoop::runWorker(i32 threadIdx)
             {
                 while (true)
                 {
-                    int clientSock = accept4(
+                    int clientSock = io_uring_prep_accept(
                         listenFd, nullptr, nullptr,
                         SOCK_NONBLOCK | SOCK_CLOEXEC
                         );

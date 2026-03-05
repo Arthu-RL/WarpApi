@@ -33,7 +33,7 @@ void increase_fd_limit(uint64_t limit) {
 
 int main(int /*argc*/, char** /*argv*/)
 {
-    increase_fd_limit(1000000);
+    increase_fd_limit(100000);
 
     // Initialize logger
     INK_CORE_LOGGER->setName("WarpAPI");
