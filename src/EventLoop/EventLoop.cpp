@@ -5,6 +5,9 @@
 #include "Server/Session.h"
 #include "Settings/Settings.h"
 
+static inline char listener_marker;
+#define LISTENER_TAG ((u64)&listener_marker)
+
 EventLoop::EventLoop() :
     _running(false)
 {
@@ -87,129 +90,167 @@ void EventLoop::runWorker(i32 threadIdx)
         return;
     }
 
-    // Create Epoll for this thread
-    int epfd = epoll_create1(0);
+    io_uring_params io_params = {};
+    io_params.sq_entries = 4096;
+    io_params.cq_entries = 8192;
+    io_params.flags = IORING_SETUP_SQPOLL | IORING_SETUP_SQ_AFF;
+    io_params.sq_thread_idle = 3000;
 
-    // Add Listener to Epoll
-    struct epoll_event ev;
-    ev.data.fd = listenFd;
-    ev.events = EPOLLIN | EPOLLET;
-    epoll_ctl(epfd, EPOLL_CTL_ADD, listenFd, &ev);
+    io_uring ring = {};
+
+    io_uring_queue_init_params(io_params.sq_entries, &ring, &io_params);
+
+    u32 required_features = IORING_FEAT_FAST_POLL | IORING_FEAT_SINGLE_MMAP | IORING_FEAT_NODROP;
+    INK_ASSERT_MSG((io_params.features & required_features) == required_features, "Params flags were not setted.");
 
     // TimerWheel that marks n seconds until session expires
     // handling keep alives sessions
     ink::TimerWheel timerWheel(60);
 
     // ObjectPool to reduce session allocation
-    ObjectPool<Session, MAX_EVENTS> sessionPool;
+    ObjectPool<Session, SESSION_POOL_SIZE> sessionPool;
+
+    // void* poolBase = sessionPool.getRawBuffer();
+    // size_t poolSize = sessionPool.getRawBufferSize();
+
+    // iovec iov;
+    // iov.iov_base = poolBase;
+    // iov.iov_len  = poolSize;
+
+    // int ret = io_uring_register_buffers(&ring, &iov, 1);
+    // INK_ASSERT_MSG(ret < 0, std::string("Buffer registration failed: ") + strerror(-ret));
 
     // Using one session table per thread
     // Using Vector for O(1) access instead of Map
-    std::vector<Session*> sessionTable;
-    sessionTable.resize(MAX_EVENTS);
+    // std::vector<Session*> sessionTable;
+    // sessionTable.resize(SESSION_POOL_SIZE);
 
     auto releaseSession = [&](Session* s) {
-        if (!s) return;
+        if (!s || s->state != SessionState::Active) return;
 
+        s->state = SessionState::Closing;
+        s->close();             // Closing the FD triggers -ECANCELED for pending io_uring requests
         timerWheel.unlink(s);
-        epoll_ctl(epfd, EPOLL_CTL_DEL, s->getSocket(), nullptr);
-        s->~Session();
-
-        sessionPool.release(s);
     };
 
-    struct epoll_event events[MAX_EVENTS];
+    auto tryFreeSession = [&](Session* s) {
+        if (s->state == SessionState::Closing && s->pendingRequests <= 0) {
+            INK_DEBUG << "[Final] Freeing session " << s;
+            s->~Session();
+            sessionPool.release(s);
+        }
+    };
 
     INK_INFO << "Thread " << threadIdx << " listening on port " << settings.port;
 
+    io_uring_sqe *sqe = io_uring_get_sqe(&ring);
+    INK_ASSERT_MSG(sqe, "Sqe is null");
+
+    io_uring_prep_accept(sqe, listenFd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
+
+    // keeps the request alive in the kernel
+    sqe->ioprio |= IORING_ACCEPT_MULTISHOT;
+
+    // identifier of the submition of the listener
+    io_uring_sqe_set_data64(sqe, LISTENER_TAG);
+
+    // submit the ring and notifies the kernel thread
+    io_uring_submit(&ring);
+
+    // Kernel timespec format to pass on io_uring_wait_cqe_timeout;
+    __kernel_timespec kts = {};
+
     while (_running)
     {
-        int timeout = timerWheel.timeToNextTickMillis();
+        io_uring_cqe* cqe;
+        u64 timeout = timerWheel.timeToNextTickMillis();
 
-        // INK_DEBUG << "[Loop] Calling epoll_wait with timeout: " << timeout << "ms";
-        int nfds = epoll_wait(epfd, events, MAX_EVENTS, timeout);
-        // INK_DEBUG << "[Loop] epoll_wait returned " << nfds << " events.";
+        kts.tv_sec  = timeout / 1000;
+        kts.tv_nsec = (timeout % 1000) * 1000000;
 
-        for (int i = 0; i < nfds; ++i)
-        {
-            socket_t fd = events[i].data.fd;
-            uint32_t evs = events[i].events;
+        int ret = io_uring_wait_cqe_timeout(&ring, &cqe, &kts);
 
-            if (fd == listenFd)
+        u32 head;
+        u32 count = 0;
+
+        // Check if we actually have CQEs to process
+        if (ret == 0 || ret == -ETIME) {
+            io_uring_for_each_cqe(&ring, head, cqe)
             {
-                while (true)
+                count++;
+                u64 tag = (u64)io_uring_cqe_get_data(cqe);
+
+                if (tag == LISTENER_TAG)
                 {
-                    int clientSock = io_uring_prep_accept(
-                        listenFd, nullptr, nullptr,
-                        SOCK_NONBLOCK | SOCK_CLOEXEC
-                        );
-
-                    if (clientSock < 0)
+                    if (cqe->res >= 0)
                     {
-                        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                            INK_DEBUG << "[Listener] EAGAIN reached. Done accepting.";
-                            break;
+                        Session* session = sessionPool.acquire();
+                        new (session) Session(cqe->res);
+
+                        INK_DEBUG << "[Conn] New Session: " << session << " FD: " << cqe->res;
+
+                        timerWheel.update(session);
+
+                        io_uring_sqe* rsqe = io_uring_get_sqe(&ring);
+                        if (rsqe) {
+                            session->onReadReady(rsqe);
                         }
-                        INK_DEBUG << "[Listener] Accept Error: " << strerror(errno);
-                        continue;
+                        else
+                        {
+                            releaseSession(session);
+                            tryFreeSession(session);
+                        }
                     }
-
-                    Session* session = sessionPool.acquire();
-                    new (session) Session(clientSock, epfd);
-
-                    if (clientSock >= (int)sessionTable.size())
-                    {
-                        sessionTable.resize(clientSock * 2);
-                    }
-
-                    sessionTable[clientSock] = session;
-
-                    epoll_event ev{};
-                    ev.data.fd = clientSock;
-                    ev.events = EPOLLIN | EPOLLET;
-                    epoll_ctl(epfd, EPOLL_CTL_ADD, clientSock, &ev);
                 }
-                continue;
-            }
+                else
+                {
+                    IoRequest* io_req = reinterpret_cast<IoRequest*>(tag);
+                    Session* s = io_req->session;
 
-            Session* session = sessionTable[fd];
+                    if (!(cqe->flags & IORING_CQE_F_MORE)) {
+                        s->pendingRequests--;
+                    }
 
-            bool activity = false;
+                    bool is_notif = (cqe->flags & IORING_CQE_F_NOTIF) != 0;
 
-            // Read
-            if (evs & (EPOLLIN | EPOLLRDHUP))
-            {
-                activity |= session->onReadReady();
-            }
+                    INK_DEBUG << "[IO] Completion for " << s << " Res: " << cqe->res
+                              << " Pending: " << s->pendingRequests << " Notif: " << is_notif;
 
-            // Write
-            if (session->getSocket() != SOCKET_ERROR_VALUE && (evs & EPOLLOUT))
-            {
-                activity |= session->onWriteReady();
-            }
+                    if (s->state == SessionState::Active && (cqe->res > 0 || is_notif))
+                    {
+                        if (io_req->optype == OperationType::Read)
+                            s->processRead(cqe->res, &ring);
+                        else
+                            s->processWrite(cqe->res, &ring, is_notif);
 
-            // Error / Hangup
-            if (evs & (EPOLLERR | EPOLLHUP))
-            {
-                releaseSession(session);
-                continue;
-            }
+                        timerWheel.update(s);
+                    }
+                    else
+                    {
+                        // If res <= 0, the kernel is done with this specific request
+                        if (s->state == SessionState::Active) {
+                            INK_DEBUG << "[IO] Closing session " << s << " due to res: " << cqe->res;
+                            releaseSession(s);
+                        }
+                    }
 
-            if (activity)
-            {
-                timerWheel.update(session);
+                    tryFreeSession(s);
+                }
             }
         }
 
-        if (timerWheel.timeToNextTickMillis() == 0)
-        {
-            timerWheel.processExpired([&](ink::TimerNode* n) {
-                Session* s = static_cast<Session*>(n);
-                releaseSession(s);
-            });
-        }
+        if (count > 0) io_uring_cq_advance(&ring, count);
+
+        timerWheel.processExpired([&](ink::TimerNode* n) {
+            Session* s = static_cast<Session*>(n);
+            INK_DEBUG << "[Timer] Session timed out: " << s;
+            releaseSession(s);
+            tryFreeSession(s);
+        });
+
+        io_uring_submit(&ring);
     }
 
+    io_uring_queue_exit(&ring);
     close(listenFd);
-    close(epfd);
 }

@@ -9,9 +9,8 @@
 #include "Utils/StringUtils.h"
 #include "Settings/Settings.h"
 
-Session::Session(socket_t socket, socket_t assignedEpollFd) :
+Session::Session(socket_t socket) :
     _socket(socket),
-    _assignedEpollFd(assignedEpollFd),
     _req(),
     _keepAlive(false),
     _readBuffer(Settings::getSettings().max_request_size),
@@ -33,137 +32,159 @@ void Session::close()
     _socket = SOCKET_ERROR_VALUE;
 }
 
-socket_t Session::getAssignedEpollFd() const noexcept
-{
-    return _assignedEpollFd;
-}
+// socket_t Session::getAssignedEpollFd() const noexcept
+// {
+//     return _assignedEpollFd;
+// }
 
 socket_t Session::getSocket() const
 {
     return _socket;
 }
 
-bool Session::onReadReady()
+void Session::onReadReady(io_uring_sqe* sqe)
 {
-    int read = false;
-    while (1)
+    size_t availableSpace;
+    char* buf = _readBuffer.getWriteBuffer(availableSpace);
+
+    if (availableSpace == 0)
     {
-        size_t availableSpace;
-        char* buf = _readBuffer.getWriteBuffer(availableSpace);
-        if (availableSpace == 0)
+        this->close();
+        // disarm the sqe
+        io_uring_prep_nop(sqe);
+        io_uring_sqe_set_data(sqe, nullptr);
+        return;
+    }
+
+    // RECEIVE HAHAHAHAHA
+    io_uring_prep_recv(sqe, _socket, buf, availableSpace, 0);
+
+    io_uring_sqe_set_data(sqe, &_readReq);
+
+    _isReadPending = true;
+    pendingRequests++;
+}
+
+void Session::onWriteReady(io_uring_sqe* sqe)
+{
+    size_t availableSpace;
+    const char* readBuf = _writeBuffer.getReadBuffer(availableSpace);
+
+    if (availableSpace == 0)
+    {
+        this->close();
+        // disarm the sqe
+        io_uring_prep_nop(sqe);
+        io_uring_sqe_set_data(sqe, nullptr);
+        return;
+    }
+
+    // MSG_NOSIGNAL prevents the kernel from killing your process kkkk
+    // if the client closed the connection.
+    io_uring_prep_send_zc(sqe, _socket, readBuf, availableSpace, MSG_NOSIGNAL, 0);
+
+    // Tag the SQE so we know which session sent the data
+    io_uring_sqe_set_data(sqe, &_writeReq);
+
+    _isWritePending = true;
+    pendingRequests++;
+}
+
+bool Session::processRead(i32 bytesRead, io_uring* ring)
+{
+    _isReadPending = false;
+
+    if (bytesRead <= 0)
+    {
+        this->close();
+        return false;
+    }
+
+    _readBuffer.advanceWritePos(bytesRead);
+
+    while (parseRequest())
+    {
+        handleRequest();
+    }
+
+    // Only get an SQE if we have data AND the NIC isn't already busy
+    if (_writeBuffer.size() > 0 && !_isWritePending)
+    {
+        io_uring_sqe* wSqe = io_uring_get_sqe(ring);
+        if (wSqe) this->onWriteReady(wSqe);
+    }
+
+    // Only get an SQE if a read isn't already flying
+    if (!_isReadPending) {
+        io_uring_sqe* rSqe = io_uring_get_sqe(ring);
+        if (rSqe) this->onReadReady(rSqe);
+    }
+
+    return true;
+}
+
+bool Session::processWrite(i32 bytesRead, io_uring* ring, bool isNotif)
+{
+    if (isNotif)
+    {
+        _isWritePending = false;
+        _writeBuffer.advanceReadPos(_lockedZcBytes);
+        _lockedZcBytes = 0;
+
+        // If we had a partial send, re-arm the rest of the buffer now
+        if (_writeBuffer.size() > 0)
         {
-            close();
+            io_uring_sqe* wSqe = io_uring_get_sqe(ring);
+            if (wSqe) onWriteReady(wSqe);
             return true;
         }
 
-        ssize_t bytesRead = io_uring_prep_recv(_socket, buf, availableSpace, 0);
-        if (bytesRead > 0)
+        // Otherwise, run your Keep-Alive / Pipelining logic
+        if (_keepAlive)
         {
-            read = true;
-            _readBuffer.advanceWritePos(bytesRead);
-            while (parseRequest())
+            _req.reset();
+            size_t availableRead;
+            _readBuffer.getReadBuffer(availableRead);
+
+            if (availableRead > 0)
             {
-                handleRequest();
+                while (parseRequest()) {
+                    handleRequest();
+                }
+
+                if (_writeBuffer.size() > 0 && !_isWritePending)
+                {
+                    io_uring_sqe* wSqe = io_uring_get_sqe(ring);
+                    if (wSqe) onWriteReady(wSqe);
+                }
             }
 
-            // Do not wait for EPOLLOUT to trigger.
-            if (_writeBuffer.size() > 0)
+            if (!_isReadPending)
             {
-                onWriteReady();
+                io_uring_sqe* rSqe = io_uring_get_sqe(ring);
+                if (rSqe) onReadReady(rSqe);
             }
         }
-        else if (bytesRead == 0)
-        {
-            close();
-            return true;
-        }
         else
         {
-            if (errno == EAGAIN || errno == EWOULDBLOCK)
-                break;
-            close();
-            return true;
+            this->close();
+            return false;
         }
+
+        return true;
     }
 
-    // Only subscribe to EPOLLOUT if we still have data pending after the attempt above
-    updateIoInterest(true, _writeBuffer.size() > 0);
-    return read;
-}
-
-bool Session::onWriteReady()
-{
-    bool wrote = false;
-
-    while (1)
+    if (bytesRead < 0)
     {
-        size_t available;
-        const char* readBuf = _writeBuffer.getReadBuffer(available);
-
-        if (available == 0) break;
-
-        ssize_t bytesSent = io_uring_prep_send(_socket, readBuf, available, 0);
-        // INK_TRACE << "Wrote " << bytesSent << " response: \n" << readBuf;
-
-        if (bytesSent > 0)
-        {
-            wrote = true;
-            _writeBuffer.advanceReadPos(bytesSent);
-        }
-        else
-        {
-            if (errno == EAGAIN || errno == EWOULDBLOCK)
-                break;
-            close();
-            return true;
-        }
+        this->close();
+        return false;
     }
 
-    if (_writeBuffer.size() == 0)
-        onWriteComplete();
+    // Record how many bytes the kernel accepted, but DO NOT advance
+    // the buffer yet. The memory is still pinned by the NIC.
+    _lockedZcBytes = bytesRead;
 
-    updateIoInterest(true, _writeBuffer.size() > 0);
-    return wrote;
-}
-
-void Session::onWriteComplete()
-{
-    if (_keepAlive)
-    {
-        _req.reset();
-
-        size_t availableRead;
-        _readBuffer.getReadBuffer(availableRead);
-
-        if (availableRead > 0)
-        {
-            // We already have buffered data — parse inline
-            onReadReady();
-        }
-        else
-        {
-            // Correct: wait for READ
-            updateIoInterest(false, true);
-        }
-    }
-    else
-    {
-        close();
-    }
-}
-
-void Session::updateIoInterest(bool wantRead, bool wantWrite) noexcept
-{
-    if (_socket == SOCKET_ERROR_VALUE) return;
-
-    struct epoll_event ev;
-    ev.data.fd = _socket;
-    ev.events = EPOLLET | EPOLLRDHUP;
-
-    if (wantRead)  ev.events |= EPOLLIN;
-    if (wantWrite) ev.events |= EPOLLOUT;
-
-    epoll_ctl(_assignedEpollFd, EPOLL_CTL_MOD, _socket, &ev);
+    return true;
 }
 
 bool Session::parseRequest()

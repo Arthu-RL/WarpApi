@@ -9,19 +9,7 @@ class StringUtils
 public:
     StringUtils();
 
-    static constexpr u32 fnv1a_hash(const char* str, size_t len) noexcept
-    {
-        uint32_t hash = 2166136261u;
-        for (size_t i = 0; i < len; ++i) {
-            char c = str[i];
-            if (c >= 'A' && c <= 'Z') c += 32;
-            hash ^= static_cast<uint8_t>(c);
-            hash *= 16777619u;
-        }
-        return hash;
-    }
-
-    static u32 hashHeaderName(const char* str, size_t len) noexcept;
+    static u32 hashStr(const char* str, size_t len) noexcept;
 
     static const char* find_crlf(const char* data, const char* end) noexcept;
 

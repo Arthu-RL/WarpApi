@@ -20,13 +20,13 @@ typedef int socket_t;
 
 #define WARP_API
 
-#define MAX_EVENTS 8192
+#define SESSION_POOL_SIZE 32*1024
 #define EPOLL_WAIT_TIMEOUT 1000 // 1 sec
 #define MIN_REQUEST_SIZE 16
 
 #define HTTP_VERSION "HTTP/1.1"
 
-enum WARP_API Method : i32
+enum WARP_API Method : u32
 {
     GET = 0,
     POST,
@@ -39,7 +39,7 @@ enum WARP_API Method : i32
 };
 
 // HTTP Status Codes
-enum WARP_API StatusCode {
+enum WARP_API StatusCode : u32 {
     // 1xx Informational
     http_continue = 100,
     switching_protocols = 101,
@@ -100,7 +100,24 @@ class WARP_API Session;
 class WARP_API EventLoop;
 class WARP_API HttpServer;
 
-typedef std::function<void(const HttpRequest&, HttpResponse&)> RequestHandler;
-typedef std::vector<std::shared_ptr<Session>> SessionTable;
+using RequestHandler = std::function<void(const HttpRequest&, HttpResponse&)>;
+
+enum WARP_API OperationType : u32 {
+    Read = 0,
+    Write
+};
+
+enum WARP_API SessionState : u32 {
+    Active = 0,
+    Closing, // Waiting for kernel to return pending SQEs
+    Dead     // Ready to be returned to ObjectPool
+};
+
+struct WARP_API IoRequest {
+    IoRequest(Session* s, OperationType ot) :
+        session(s), optype(ot) {}
+    Session* session;
+    OperationType optype;
+};
 
 #endif // WARPDEFS_H

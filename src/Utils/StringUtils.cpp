@@ -6,13 +6,13 @@
 
 StringUtils::StringUtils() {}
 
-u32 StringUtils::hashHeaderName(const char* str, size_t len) noexcept
+u32 StringUtils::hashStr(const char* str, size_t len) noexcept
 {
     u32 hash = 2166136261u;
     for (size_t i = 0; i < len; ++i) {
         char c = str[i];
         if (c >= 'A' && c <= 'Z') c += 32;
-        hash ^= static_cast<uint8_t>(c);
+        hash ^= static_cast<u8>(c);
         hash *= 16777619u;
     }
     return hash;
@@ -71,35 +71,11 @@ bool StringUtils::iequals_small(std::string_view a, std::string_view b) noexcept
     const char* pb = b.data();
     size_t len = a.size();
 
-    // Unroll loop for common cases
-    switch (len) {
-    case 10: // "keep-alive"
-        if ((pa[0] | 32) != (pb[0] | 32)) return false;
-        if ((pa[1] | 32) != (pb[1] | 32)) return false;
-        if ((pa[2] | 32) != (pb[2] | 32)) return false;
-        if ((pa[3] | 32) != (pb[3] | 32)) return false;
-        if ((pa[4] | 32) != (pb[4] | 32)) return false;
-        if ((pa[5] | 32) != (pb[5] | 32)) return false;
-        if ((pa[6] | 32) != (pb[6] | 32)) return false;
-        if ((pa[7] | 32) != (pb[7] | 32)) return false;
-        if ((pa[8] | 32) != (pb[8] | 32)) return false;
-        if ((pa[9] | 32) != (pb[9] | 32)) return false;
-        return true;
-
-    case 5: // "close"
-        if ((pa[0] | 32) != (pb[0] | 32)) return false;
-        if ((pa[1] | 32) != (pb[1] | 32)) return false;
-        if ((pa[2] | 32) != (pb[2] | 32)) return false;
-        if ((pa[3] | 32) != (pb[3] | 32)) return false;
-        if ((pa[4] | 32) != (pb[4] | 32)) return false;
-        return true;
-
-    default:
-        for (size_t i = 0; i < len; ++i) {
-            if ((pa[i] | 32) != (pb[i] | 32)) return false;
-        }
-        return true;
+    for (size_t i = 0; i < len; ++i) {
+        if ((pa[i] | 32) != (pb[i] | 32)) return false;
     }
+
+    return true;
 }
 
 size_t StringUtils::fast_atoi(const char* str, size_t len) noexcept
@@ -118,7 +94,7 @@ std::string_view StringUtils::fast_itoa(char* buf, size_t len, size_t value) noe
 {
     auto [ptr, ec] = std::to_chars(buf, buf + len, value);
 
-    if (ec != std::errc()) [[unlikely]]
+    if (ec == std::errc()) [[unlikely]]
     {
         return {};
     }
