@@ -32,10 +32,11 @@ void Session::close()
     _socket = SOCKET_ERROR_VALUE;
 }
 
-// socket_t Session::getAssignedEpollFd() const noexcept
-// {
-//     return _assignedEpollFd;
-// }
+void Session::shutdown()
+{
+    if (_socket > SOCKET_ERROR_VALUE)
+        ::shutdown(_socket, SHUT_RDWR);
+}
 
 socket_t Session::getSocket() const
 {
@@ -56,20 +57,18 @@ void Session::onReadReady(io_uring_sqe* sqe)
         return;
     }
 
-    // RECEIVE HAHAHAHAHA
+    // receive the request
     io_uring_prep_recv(sqe, _socket, buf, availableSpace, 0);
 
     io_uring_sqe_set_data(sqe, &_readReq);
 
-    _isReadPending = true;
-    pendingRequests++;
+    updateIoState(IO_READING, true);
 }
 
 void Session::onWriteReady(io_uring_sqe* sqe)
 {
     size_t availableSpace;
     const char* readBuf = _writeBuffer.getReadBuffer(availableSpace);
-
     if (availableSpace == 0)
     {
         this->close();
@@ -79,55 +78,71 @@ void Session::onWriteReady(io_uring_sqe* sqe)
         return;
     }
 
-    // MSG_NOSIGNAL prevents the kernel from killing your process kkkk
+    // MSG_NOSIGNAL prevents EPIPE from killing the process
     // if the client closed the connection.
     io_uring_prep_send_zc(sqe, _socket, readBuf, availableSpace, MSG_NOSIGNAL, 0);
 
     // Tag the SQE so we know which session sent the data
     io_uring_sqe_set_data(sqe, &_writeReq);
 
-    _isWritePending = true;
-    pendingRequests++;
+    updateIoState(IO_WRITING, true);
 }
 
 bool Session::processRead(i32 bytesRead, io_uring* ring)
 {
-    _isReadPending = false;
+    updateIoState(IO_READING, false);
 
     if (bytesRead <= 0)
     {
-        this->close();
-        return false;
+        // If the client sent a FIN (0) or there was an error (< 0)
+        // We only close immediately if our write buffer is empty.
+        if (_writeBuffer.size() == 0) {
+            this->close();
+            return false;
+        }
+
+        _keepAlive = false;
+        setStatus(SessionStatus::Closing);
+        return true;
     }
 
     _readBuffer.advanceWritePos(bytesRead);
 
     while (parseRequest())
     {
+        INK_LOG << "request parsed";
         handleRequest();
     }
 
-    // Only get an SQE if we have data AND the NIC isn't already busy
-    if (_writeBuffer.size() > 0 && !_isWritePending)
+    INK_LOG << "after request handle";
+
+    if (_writeBuffer.size() > 0 && !isWriteInFlight())
     {
         io_uring_sqe* wSqe = io_uring_get_sqe(ring);
-        if (wSqe) this->onWriteReady(wSqe);
+        if (wSqe)
+        {
+            onWriteReady(wSqe);
+        }
     }
 
-    // Only get an SQE if a read isn't already flying
-    if (!_isReadPending) {
+    // Re-arm Read if not reading already
+    if (!isReadInFlight() && _status == SessionStatus::Active)
+    {
         io_uring_sqe* rSqe = io_uring_get_sqe(ring);
-        if (rSqe) this->onReadReady(rSqe);
+        if (rSqe) onReadReady(rSqe);
     }
 
     return true;
 }
 
-bool Session::processWrite(i32 bytesRead, io_uring* ring, bool isNotif)
+bool Session::processWrite(i32 bytesRead, bool is_notif, io_uring* ring)
 {
-    if (isNotif)
+    if (is_notif)
     {
-        _isWritePending = false;
+        // Zero-Copy Notification (CQE 2)
+        // The NIC is finally done with the memory. We can safely advance our buffer.
+        updateIoState(IO_WAITING_ZC, false);
+
         _writeBuffer.advanceReadPos(_lockedZcBytes);
         _lockedZcBytes = 0;
 
@@ -139,33 +154,8 @@ bool Session::processWrite(i32 bytesRead, io_uring* ring, bool isNotif)
             return true;
         }
 
-        // Otherwise, run your Keep-Alive / Pipelining logic
-        if (_keepAlive)
-        {
-            _req.reset();
-            size_t availableRead;
-            _readBuffer.getReadBuffer(availableRead);
-
-            if (availableRead > 0)
-            {
-                while (parseRequest()) {
-                    handleRequest();
-                }
-
-                if (_writeBuffer.size() > 0 && !_isWritePending)
-                {
-                    io_uring_sqe* wSqe = io_uring_get_sqe(ring);
-                    if (wSqe) onWriteReady(wSqe);
-                }
-            }
-
-            if (!_isReadPending)
-            {
-                io_uring_sqe* rSqe = io_uring_get_sqe(ring);
-                if (rSqe) onReadReady(rSqe);
-            }
-        }
-        else
+        // Handle Keep-Alive logic only after the buffer is fully flushed and unlocked
+        if (!_keepAlive)
         {
             this->close();
             return false;
@@ -174,6 +164,9 @@ bool Session::processWrite(i32 bytesRead, io_uring* ring, bool isNotif)
         return true;
     }
 
+    // Send Result (CQE 1)
+    updateIoState(IO_WRITING, false);
+
     if (bytesRead < 0)
     {
         this->close();
@@ -181,7 +174,7 @@ bool Session::processWrite(i32 bytesRead, io_uring* ring, bool isNotif)
     }
 
     // Record how many bytes the kernel accepted, but DO NOT advance
-    // the buffer yet. The memory is still pinned by the NIC.
+    // the buffer yet. The memory is still pinned by the NIC!
     _lockedZcBytes = bytesRead;
 
     return true;
@@ -346,6 +339,19 @@ void Session::handleRequest()
     response.addHeader(HeaderType::Server, APP_INFO_HEADER);
     response.initBody(&_writeBuffer);
 
+    // Set Connection header based on keep-alive
+    if (_keepAlive)
+    {
+        response.addHeader(HeaderType::Connection, KEEP_ALIVE_HEADER);
+    }
+    else
+    {
+        response.addHeader(HeaderType::Connection, CLOSE_CONN_HEADER);
+        // If no keep-alive, mark the status as Closing
+        // so processRead/Write know to shut down after the buffer is flushed.
+        setStatus(SessionStatus::Closing);
+    }
+
     try
     {
         Endpoint* endpoint = EndpointManager::getInstance()->getEndpoint(_req.method(), _req.path());
@@ -363,17 +369,13 @@ void Session::handleRequest()
     catch (const std::exception& e)
     {
         response.setStatus(StatusCode::internal_server_error);
+        if (_keepAlive)
+        {
+            response.addHeader(HeaderType::Connection, CLOSE_CONN_HEADER);
+            setStatus(SessionStatus::Closing);
+            _keepAlive = false;
+        }
         response.setBody("Internal Server error: " + std::string(e.what()));
-    }
-
-    // Set Connection header based on keep-alive
-    if (_keepAlive)
-    {
-        response.addHeader(HeaderType::Connection, KEEP_ALIVE_HEADER);
-    }
-    else
-    {
-        response.addHeader(HeaderType::Connection, CLOSE_CONN_HEADER);
     }
 
     // auto end = std::chrono::high_resolution_clock::now();

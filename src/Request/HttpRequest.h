@@ -14,7 +14,6 @@ struct WARP_API RequestData {
         method(Method::UNKNOWN),
         path(""),
         version("HTTP/2.0"),
-        headers({}),
         body(""),
         queryParams({}) {}
 
@@ -22,18 +21,19 @@ struct WARP_API RequestData {
     std::string_view path;
     std::string_view query;
     std::string_view version;
-    std::unordered_map<i32, std::string_view> headers;
     std::string_view body;
+    std::array<std::string_view, MAX_HEADERS_SIZE> headers;
 
     std::unordered_map<std::string, std::string> queryParams;
 
     void clear() noexcept
     {
         method = Method::UNKNOWN;
-
-        // headers.fill({});
+        path = {};
+        query = {};
+        version = {};
         body = {};
-        queryParams.clear();
+        headers.fill({});
     }
 };
 
@@ -118,23 +118,23 @@ public:
     //     _data.body.append(buffer);
     // }
 
-    const std::unordered_map<i32, std::string_view>& headers() const noexcept
+    const std::array<std::string_view, MAX_HEADERS_SIZE>& headers() const noexcept
     {
         return _data.headers;
     }
 
     void addHeader(const HeaderType& key, const char* v, const size_t vLen) noexcept
     {
-        _data.headers[key] = std::string_view(v, vLen);
+        if (key != HeaderType::COUNT)
+            _data.headers[key] = std::string_view(v, vLen);
     }
 
-    const std::string_view getHeader(const HeaderType& key, const std::string& default_value = "") const noexcept
+    const std::string_view getHeader(const HeaderType& key) const noexcept
     {
-        auto it = _data.headers.find(static_cast<i32>(key));
-        if (it == _data.headers.end())
-            return default_value;
+        if (key < HeaderType::COUNT)
+            return _data.headers[key];
 
-        return it->second;
+        return {};
     }
 
     const std::unordered_map<std::string, std::string>& queryParams() const noexcept
@@ -178,7 +178,7 @@ public:
 
     void setVersion(const std::string_view& version) noexcept
     {
-        _data.version = std::string(version);
+        _data.version = version;
     }
 
     const RequestData& getRequestData() const noexcept

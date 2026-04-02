@@ -28,9 +28,11 @@ struct WARP_API HttpResponseData {
         headers({}),
         body(nullptr) {}
 
-    int status;
+    i32 status;
     std::string_view version;
     std::array<std::string_view, MAX_HEADERS_SIZE> headers;
+    // Tracks which headers are active
+    std::array<HeaderType, MAX_HEADERS_SIZE> active_headers;
     u32 header_count = 0;
 
     ink::RingBuffer* body;
@@ -45,8 +47,12 @@ public:
     void setStatus(int status) { _data.status = status; }
     void setVersion(const std::string_view version) { _data.version = version; }
     void addHeader(const HeaderType key, const std::string_view& value) {
-        if (_data.header_count >= _data.headers.size()) throw std::out_of_range("Too many headers");
-        _data.headers[_data.header_count++] = value;
+        if (_data.headers[key].empty())
+        {
+            _data.active_headers[_data.header_count++] = key;
+        }
+
+        _data.headers[key] = value;
     }
     void initBody(ink::RingBuffer* writeBufferPtr) { _data.body = writeBufferPtr; }
     void setBody(const std::string_view body)
@@ -56,26 +62,27 @@ public:
 
         auto write = [&](std::string_view sv)
         {
-            if (sv.empty()) return true;
             return writeAll(out, sv.data(), sv.size());
         };
 
         // Status line
         write(_data.version);
         write(" ");
-        write(StringUtils::fast_itoa(numBuf, sizeof(numBuf), _data.status));
-        write(" ");
-        write(statusText(_data.status));
+        write(getStatusString(_data.status));
         write("\r\n");
 
         // Headers
         for (u32 i = 0; i < _data.header_count; ++i)
         {
-            std::string_view value = _data.headers[i];
+            HeaderType key = _data.active_headers[i];
 
-            write(HeaderStrings[i]);
+            // Skip ContentLength so we never accidentally print it twice
+            if (key == HeaderType::ContentLength) continue;
+
+            // No need to check if empty anymore, we KNOW it's populated
+            write(HeaderStrings[key]);
             write(": ");
-            write(value);
+            write(_data.headers[key]);
             write("\r\n");
         }
 
@@ -83,10 +90,8 @@ public:
         write(HeaderStrings[HeaderType::ContentLength]);
         write(": ");
         write(StringUtils::fast_itoa(numBuf, sizeof(numBuf), body.length()));
-        write("\r\n");
-
-        // Headers section sep
-        write("\r\n");
+        // headers sep
+        write("\r\n\r\n");
 
         // body
         write(body);
@@ -95,60 +100,61 @@ public:
 private:
     HttpResponseData _data;
 
-    std::string_view statusText(int status) const {
-        static const std::array<const char*, 506> statusMap = []{
-            std::array<const char*, 506> arr = {};
-            arr[100] = "Continue";
-            arr[101] = "Switching Protocols";
-            arr[102] = "Processing";
-            arr[200] = "OK";
-            arr[201] = "Created";
-            arr[202] = "Accepted";
-            arr[203] = "Non-Authoritative Information";
-            arr[204] = "No Content";
-            arr[205] = "Reset Content";
-            arr[206] = "Partial Content";
-            arr[300] = "Multiple Choices";
-            arr[301] = "Moved Permanently";
-            arr[302] = "Found";
-            arr[303] = "See Other";
-            arr[304] = "Not Modified";
-            arr[305] = "Use Proxy";
-            arr[307] = "Temporary Redirect";
-            arr[308] = "Permanent Redirect";
-            arr[400] = "Bad Request";
-            arr[401] = "Unauthorized";
-            arr[402] = "Payment Required";
-            arr[403] = "Forbidden";
-            arr[404] = "Not Found";
-            arr[405] = "Method Not Allowed";
-            arr[406] = "Not Acceptable";
-            arr[407] = "Proxy Authentication Required";
-            arr[408] = "Request Timeout";
-            arr[409] = "Conflict";
-            arr[410] = "Gone";
-            arr[411] = "Length Required";
-            arr[412] = "Precondition Failed";
-            arr[413] = "Payload Too Large";
-            arr[414] = "URI Too Long";
-            arr[415] = "Unsupported Media Type";
-            arr[416] = "Range Not Satisfiable";
-            arr[417] = "Expectation Failed";
-            arr[429] = "Too Many Requests";
-            arr[500] = "Internal Server Error";
-            arr[501] = "Not Implemented";
-            arr[502] = "Bad Gateway";
-            arr[503] = "Service Unavailable";
-            arr[504] = "Gateway Timeout";
-            arr[505] = "HTTP Version Not Supported";
+    std::string_view getStatusString(int status) const {
+        static const std::array<std::string_view, 506> statusMap = []{
+            std::array<std::string_view, 506> arr = {};
+            arr[100] = "100 Continue";
+            arr[101] = "101 Switching Protocols";
+            arr[102] = "102 Processing";
+            arr[200] = "200 OK";
+            arr[201] = "201 Created";
+            arr[202] = "202 Accepted";
+            arr[203] = "203 Non-Authoritative Information";
+            arr[204] = "204 No Content";
+            arr[205] = "205 Reset Content";
+            arr[206] = "206 Partial Content";
+            arr[300] = "300 Multiple Choices";
+            arr[301] = "301 Moved Permanently";
+            arr[302] = "302 Found";
+            arr[303] = "303 See Other";
+            arr[304] = "304 Not Modified";
+            arr[305] = "305 Use Proxy";
+            arr[307] = "307 Temporary Redirect";
+            arr[308] = "308 Permanent Redirect";
+            arr[400] = "400 Bad Request";
+            arr[401] = "401 Unauthorized";
+            arr[402] = "402 Payment Required";
+            arr[403] = "403 Forbidden";
+            arr[404] = "404 Not Found";
+            arr[405] = "405 Method Not Allowed";
+            arr[406] = "406 Not Acceptable";
+            arr[407] = "407 Proxy Authentication Required";
+            arr[408] = "408 Request Timeout";
+            arr[409] = "409 Conflict";
+            arr[410] = "410 Gone";
+            arr[411] = "411 Length Required";
+            arr[412] = "412 Precondition Failed";
+            arr[413] = "413 Payload Too Large";
+            arr[414] = "414 URI Too Long";
+            arr[415] = "415 Unsupported Media Type";
+            arr[416] = "416 Range Not Satisfiable";
+            arr[417] = "417 Expectation Failed";
+            arr[429] = "429 Too Many Requests";
+            arr[500] = "500 Internal Server Error";
+            arr[501] = "501 Not Implemented";
+            arr[502] = "502 Bad Gateway";
+            arr[503] = "503 Service Unavailable";
+            arr[504] = "504 Gateway Timeout";
+            arr[505] = "505 HTTP Version Not Supported";
             return arr;
         }();
 
-        if (status >= 0 && status < static_cast<int>(statusMap.size()) && statusMap[status] != nullptr) {
+        // Using std::string_view allows us to just check .empty()
+        if (status >= 0 && status < static_cast<int>(statusMap.size()) && !statusMap[status].empty()) {
             return statusMap[status];
         }
 
-        return "Unknown";
+        return "500 Internal Server Error"; // fallback
     }
 };
 

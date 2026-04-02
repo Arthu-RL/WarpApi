@@ -102,15 +102,24 @@ class WARP_API HttpServer;
 
 using RequestHandler = std::function<void(const HttpRequest&, HttpResponse&)>;
 
-enum WARP_API OperationType : u32 {
+enum WARP_API OperationType : u8 {
     Read = 0,
     Write
 };
 
-enum WARP_API SessionState : u32 {
+// TO manage Connection Lifecycle
+enum WARP_API SessionStatus : u8 {
     Active = 0,
     Closing, // Waiting for kernel to return pending SQEs
-    Dead     // Ready to be returned to ObjectPool
+    Closed     // Ready to be returned to ObjectPool
+};
+
+// Bitmask for exact I/O operations in flight in the kernel
+enum IoStateFlags : u8 {
+    IO_NONE         = 0,
+    IO_READING      = 1 << 0, // A recv SQE is in the ring
+    IO_WRITING      = 1 << 1, // A send_zc SQE is in the ring
+    IO_WAITING_ZC   = 1 << 2, // Waiting for the F_NOTIF CQE from the NIC
 };
 
 struct WARP_API IoRequest {

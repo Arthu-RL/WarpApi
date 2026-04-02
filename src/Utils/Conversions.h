@@ -13,7 +13,7 @@ public:
     static std::string urlEncode(const std::string_view input);
     static std::string urlDecode(const std::string_view input);
 
-    static const bool iequals(std::string_view a, std::string_view b) noexcept;
+    static bool iequals(std::string_view a, std::string_view b) noexcept;
 };
 
 #endif // CONVERSIONS_H

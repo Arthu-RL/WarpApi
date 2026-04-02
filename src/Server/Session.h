@@ -23,6 +23,9 @@ public:
     /** @brief Closes the underlying socket and cleans up session state. */
     void close();
 
+    /** @brief Shut down the socket to cancel pending network IO gracefully. */
+    void shutdown();
+
     /** @brief Returns the raw file descriptor for this session. */
     socket_t getSocket() const;
 
@@ -42,7 +45,7 @@ public:
      * @brief Finalizes a write operation after CQE completion.
      * @return true if session remains active, false if it should be closed.
      */
-    bool processWrite(i32 bytesRead, io_uring* ring, bool isNotif);
+    bool processWrite(i32 bytesRead, bool is_notif, io_uring* ring);
 
     /**
      * @brief Processes data received from the kernel.
@@ -51,8 +54,45 @@ public:
     bool processRead(i32 bytesRead, io_uring* ring);
 
 public:
-    i32 pendingRequests = 0;
-    SessionState state = SessionState::Active;
+
+    bool isReadInFlight() const { return (_ioFlags & IO_READING) != 0; }
+    bool isWriteInFlight() const { return (_ioFlags & IO_WRITING) != 0; }
+    bool isZcNotifInFlight() const { return (_ioFlags & IO_WAITING_ZC) != 0; }
+    bool hasPendingIo() const { return _ioFlags != IO_NONE; }
+
+    SessionStatus& getStatus() {
+        return _status;
+    }
+
+    // Lifecycle Status Setter
+    void setStatus(SessionStatus status) {
+        _status = status;
+    }
+
+    // Usage: updateIoState(IO_READING, true)  -> Adds flag
+    // Usage: updateIoState(IO_READING, false) -> Removes flag
+    void updateIoState(IoStateFlags flag, bool active) {
+        if (active)
+            _ioFlags = static_cast<IoStateFlags>(_ioFlags | flag);
+        else
+            _ioFlags = static_cast<IoStateFlags>(_ioFlags & ~flag);
+    }
+
+    // Utility for quick clearing (e.g., on hard close)
+    void resetIoState() {
+        _ioFlags = IO_NONE;
+    }
+private:
+
+    SessionStatus _status = SessionStatus::Active;
+    IoStateFlags  _ioFlags = IO_NONE;
+
+    /**
+     * @brief Operation scope for a session to avoid using dynamic allocs.
+     * It works like a wrapper to grab the context of the session.
+     */
+    IoRequest _readReq{this, OperationType::Read};
+    IoRequest _writeReq{this, OperationType::Write};
 
 private:
     bool parseRequest();
@@ -63,17 +103,9 @@ private:
     bool _keepAlive;
 
     usize _lockedZcBytes = 0;
-    bool _isReadPending = false;
-    bool _isWritePending = false;
 
     ink::RingBuffer _readBuffer;
     ink::RingBuffer _writeBuffer;
-
-    /**
-     * @brief Operation scope for a session to avoid using dynamic allocs.
-     * It works like a wrapper to grab the context of the session.
-     */
-    IoRequest _readReq{this, OperationType::Read};
-    IoRequest _writeReq{this, OperationType::Write};
 };
+
 #endif // SESSION_H

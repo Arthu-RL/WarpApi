@@ -94,7 +94,7 @@ std::string_view StringUtils::fast_itoa(char* buf, size_t len, size_t value) noe
 {
     auto [ptr, ec] = std::to_chars(buf, buf + len, value);
 
-    if (ec == std::errc()) [[unlikely]]
+    if (ec != std::errc()) [[unlikely]]
     {
         return {};
     }

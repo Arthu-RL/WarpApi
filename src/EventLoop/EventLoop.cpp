@@ -98,14 +98,20 @@ void EventLoop::runWorker(i32 threadIdx)
 
     io_uring ring = {};
 
-    io_uring_queue_init_params(io_params.sq_entries, &ring, &io_params);
+    int ring_res = io_uring_queue_init_params(io_params.sq_entries, &ring, &io_params);
+    if (ring_res < 0)
+    {
+        INK_ERROR << "Thread " << threadIdx << " io_uring init failed: " << strerror(-ring_res);
+        close(listenFd);
+        return;
+    }
 
     u32 required_features = IORING_FEAT_FAST_POLL | IORING_FEAT_SINGLE_MMAP | IORING_FEAT_NODROP;
     INK_ASSERT_MSG((io_params.features & required_features) == required_features, "Params flags were not setted.");
 
     // TimerWheel that marks n seconds until session expires
     // handling keep alives sessions
-    ink::TimerWheel timerWheel(60);
+    ink::TimerWheel timerWheel(settings.connection_timeout_ms/1000, 1000);
 
     // ObjectPool to reduce session allocation
     ObjectPool<Session, SESSION_POOL_SIZE> sessionPool;
@@ -126,19 +132,17 @@ void EventLoop::runWorker(i32 threadIdx)
     // sessionTable.resize(SESSION_POOL_SIZE);
 
     auto releaseSession = [&](Session* s) {
-        if (!s || s->state != SessionState::Active) return;
-
-        s->state = SessionState::Closing;
-        s->close();             // Closing the FD triggers -ECANCELED for pending io_uring requests
+        INK_ASSERT_MSG(s->getStatus() == SessionStatus::Closing, "Cannot release a session that is not closing...");
+        s->setStatus(SessionStatus::Closed);
+        s->shutdown();
         timerWheel.unlink(s);
     };
 
     auto tryFreeSession = [&](Session* s) {
-        if (s->state == SessionState::Closing && s->pendingRequests <= 0) {
-            INK_DEBUG << "[Final] Freeing session " << s;
-            s->~Session();
-            sessionPool.release(s);
-        }
+        INK_ASSERT_MSG(s->getStatus() == SessionStatus::Closed, "Cannot free a session that is not closed...");
+        INK_DEBUG << "[Final] Freeing session " << s;
+        s->~Session();
+        sessionPool.release(s);
     };
 
     INK_INFO << "Thread " << threadIdx << " listening on port " << settings.port;
@@ -174,7 +178,8 @@ void EventLoop::runWorker(i32 threadIdx)
         u32 count = 0;
 
         // Check if we actually have CQEs to process
-        if (ret == 0 || ret == -ETIME) {
+        if (ret == 0 || ret == -ETIME)
+        {
             io_uring_for_each_cqe(&ring, head, cqe)
             {
                 count++;
@@ -184,22 +189,32 @@ void EventLoop::runWorker(i32 threadIdx)
                 {
                     if (cqe->res >= 0)
                     {
-                        Session* session = sessionPool.acquire();
-                        new (session) Session(cqe->res);
+                        Session* s = sessionPool.acquire();
+                        new (s) Session(cqe->res);
 
-                        INK_DEBUG << "[Conn] New Session: " << session << " FD: " << cqe->res;
-
-                        timerWheel.update(session);
+                        INK_DEBUG << "[Conn] New Session: " << s << " FD: " << cqe->res;
+                        timerWheel.update(s);
 
                         io_uring_sqe* rsqe = io_uring_get_sqe(&ring);
-                        if (rsqe) {
-                            session->onReadReady(rsqe);
-                        }
+                        if (rsqe)
+                            s->onReadReady(rsqe);
                         else
                         {
-                            releaseSession(session);
-                            tryFreeSession(session);
+                            INK_WARN << "[Conn] Dropping connection, SQ is full!";
+
+                            s->setStatus(Closing);
+                            releaseSession(s);
+                            tryFreeSession(s);
                         }
+                    }
+
+                    if (!(cqe->flags & IORING_CQE_F_MORE))
+                    {
+                        INK_INFO << "Re-arming multishot listener on thread " << threadIdx;
+                        io_uring_sqe* acc_sqe = io_uring_get_sqe(&ring);
+                        io_uring_prep_accept(acc_sqe, listenFd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
+                        acc_sqe->ioprio |= IORING_ACCEPT_MULTISHOT;
+                        io_uring_sqe_set_data64(acc_sqe, LISTENER_TAG);
                     }
                 }
                 else
@@ -207,34 +222,44 @@ void EventLoop::runWorker(i32 threadIdx)
                     IoRequest* io_req = reinterpret_cast<IoRequest*>(tag);
                     Session* s = io_req->session;
 
-                    if (!(cqe->flags & IORING_CQE_F_MORE)) {
-                        s->pendingRequests--;
-                    }
-
                     bool is_notif = (cqe->flags & IORING_CQE_F_NOTIF) != 0;
+                    bool has_more = (cqe->flags & IORING_CQE_F_MORE) != 0;
+                    i32 res = cqe->res;
 
-                    INK_DEBUG << "[IO] Completion for " << s << " Res: " << cqe->res
-                              << " Pending: " << s->pendingRequests << " Notif: " << is_notif;
+                    INK_DEBUG << "[IO] Completion for " << s
+                              << " Op: " << (int)io_req->optype
+                              << " Res: " << res << " Notif: " << is_notif;
 
-                    if (s->state == SessionState::Active && (cqe->res > 0 || is_notif))
+                    if (s->getStatus() == SessionStatus::Closing && !s->hasPendingIo())
+                    {
+                        releaseSession(s);
+                        tryFreeSession(s);
+                    }
+                    else if (s->getStatus() == SessionStatus::Active)
                     {
                         if (io_req->optype == OperationType::Read)
-                            s->processRead(cqe->res, &ring);
-                        else
-                            s->processWrite(cqe->res, &ring, is_notif);
+                        {
+                            // processRead handles clearing the IO_READING flag internally
+                            if (!s->processRead(res, &ring))
+                            {
+                                s->setStatus(Closing);
+                            }
+                        }
+                        else if (io_req->optype == OperationType::Write)
+                        {
+                            // Only set this to true so hasPendingIo() knows not to kill
+                            // the session while wait for the notification CQE.
+                            if (has_more)
+                                s->updateIoState(IO_WAITING_ZC, true);
+
+                            if (!s->processWrite(res, is_notif, &ring))
+                            {
+                                s->setStatus(SessionStatus::Closing);
+                            }
+                        }
 
                         timerWheel.update(s);
                     }
-                    else
-                    {
-                        // If res <= 0, the kernel is done with this specific request
-                        if (s->state == SessionState::Active) {
-                            INK_DEBUG << "[IO] Closing session " << s << " due to res: " << cqe->res;
-                            releaseSession(s);
-                        }
-                    }
-
-                    tryFreeSession(s);
                 }
             }
         }
@@ -243,9 +268,17 @@ void EventLoop::runWorker(i32 threadIdx)
 
         timerWheel.processExpired([&](ink::TimerNode* n) {
             Session* s = static_cast<Session*>(n);
+
             INK_DEBUG << "[Timer] Session timed out: " << s;
-            releaseSession(s);
-            tryFreeSession(s);
+
+            s->setStatus(SessionStatus::Closing);
+            s->close();
+
+            if (!s->hasPendingIo())
+            {
+                releaseSession(s);
+                tryFreeSession(s);
+            }
         });
 
         io_uring_submit(&ring);
