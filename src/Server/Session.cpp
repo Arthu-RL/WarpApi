@@ -9,6 +9,7 @@
 #include "Utils/StringUtils.h"
 #include "Settings/Settings.h"
 
+#ifdef USE_IOURING
 Session::Session(socket_t socket) :
     _socket(socket),
     _req(),
@@ -18,6 +19,20 @@ Session::Session(socket_t socket) :
 {
     // Empty
 }
+#endif
+
+#ifdef USE_EPOLL
+Session::Session(socket_t socket, socket_t assignedEpollFd) :
+    _socket(socket),
+    _req(),
+    _keepAlive(false),
+    _readBuffer(Settings::getSettings().max_request_size),
+    _writeBuffer(Settings::getSettings().max_response_size),
+    _assignedEpollFd(assignedEpollFd)
+{
+    // Empty
+}
+#endif
 
 Session::~Session()
 {
@@ -38,11 +53,142 @@ void Session::shutdown()
         ::shutdown(_socket, SHUT_RDWR);
 }
 
-socket_t Session::getSocket() const
+socket_t Session::getSocket() const noexcept
 {
     return _socket;
 }
 
+#ifdef USE_EPOLL
+socket_t Session::getAssignedEpollFd() const noexcept
+{
+    return _assignedEpollFd;
+}
+
+bool Session::onReadReady()
+{
+    int read = false;
+    while (1)
+    {
+        size_t availableSpace;
+        char* buf = _readBuffer.getWriteBuffer(availableSpace);
+        if (availableSpace == 0)
+        {
+            close();
+            return true;
+        }
+
+        ssize_t bytesRead = recv(_socket, buf, availableSpace, 0);
+        if (bytesRead > 0)
+        {
+            read = true;
+            _readBuffer.advanceWritePos(bytesRead);
+            while (parseRequest())
+            {
+                handleRequest();
+            }
+
+            // Do not wait for EPOLLOUT to trigger.
+            if (_writeBuffer.size() > 0)
+            {
+                onWriteReady();
+            }
+        }
+        else if (bytesRead == 0)
+        {
+            close();
+            return true;
+        }
+        else
+        {
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+                break;
+            close();
+            return true;
+        }
+    }
+
+    // Only subscribe to EPOLLOUT if we still have data pending after the attempt above
+    updateIoInterest(true, _writeBuffer.size() > 0);
+    return read;
+}
+
+bool Session::onWriteReady()
+{
+    bool wrote = false;
+
+    while (1)
+    {
+        size_t available;
+        const char* readBuf = _writeBuffer.getReadBuffer(available);
+
+        if (available == 0) break;
+
+        ssize_t bytesSent = send(_socket, readBuf, available, 0);
+        // INK_TRACE << "Wrote " << bytesSent << " response: \n" << readBuf;
+
+        if (bytesSent > 0)
+        {
+            wrote = true;
+            _writeBuffer.advanceReadPos(bytesSent);
+        }
+        else
+        {
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+                break;
+            close();
+            return true;
+        }
+    }
+
+    if (_writeBuffer.size() == 0)
+        onWriteComplete();
+
+    updateIoInterest(true, _writeBuffer.size() > 0);
+    return wrote;
+}
+
+void Session::onWriteComplete()
+{
+    if (_keepAlive)
+    {
+        _req.reset();
+
+        size_t availableRead;
+        _readBuffer.getReadBuffer(availableRead);
+
+        if (availableRead > 0)
+        {
+            // We already have buffered data — parse inline
+            onReadReady();
+        }
+        else
+        {
+            // Correct: wait for READ
+            updateIoInterest(false, true);
+        }
+    }
+    else
+    {
+        close();
+    }
+}
+
+void Session::updateIoInterest(bool wantRead, bool wantWrite) noexcept
+{
+    if (_socket == SOCKET_ERROR_VALUE) return;
+
+    struct epoll_event ev;
+    ev.data.fd = _socket;
+    ev.events = EPOLLET | EPOLLRDHUP;
+
+    if (wantRead)  ev.events |= EPOLLIN;
+    if (wantWrite) ev.events |= EPOLLOUT;
+
+    epoll_ctl(_assignedEpollFd, EPOLL_CTL_MOD, _socket, &ev);
+}
+#endif
+
+#ifdef USE_IOURING
 void Session::onReadReady(io_uring_sqe* sqe)
 {
     size_t availableSpace;
@@ -179,6 +325,7 @@ bool Session::processWrite(i32 bytesRead, bool is_notif, io_uring* ring)
 
     return true;
 }
+#endif
 
 bool Session::parseRequest()
 {
@@ -349,7 +496,9 @@ void Session::handleRequest()
         response.addHeader(HeaderType::Connection, CLOSE_CONN_HEADER);
         // If no keep-alive, mark the status as Closing
         // so processRead/Write know to shut down after the buffer is flushed.
+#ifdef USE_IOURING
         setStatus(SessionStatus::Closing);
+#endif
     }
 
     try
@@ -372,7 +521,9 @@ void Session::handleRequest()
         if (_keepAlive)
         {
             response.addHeader(HeaderType::Connection, CLOSE_CONN_HEADER);
+#ifdef USE_IOURING
             setStatus(SessionStatus::Closing);
+#endif
             _keepAlive = false;
         }
         response.setBody("Internal Server error: " + std::string(e.what()));

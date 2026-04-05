@@ -11,6 +11,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -Wall -Wextra")
 set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static-libstdc++ -static-libgcc")
 
+option(USE_EPOLL "Build API with EPOLL request processing system" ON)
+option(USE_IOURING "Build API with IO_URING request processing system" OFF)
+
+if((USE_EPOLL AND USE_IOURING) OR (NOT USE_EPOLL AND NOT USE_IOURING))
+    message(FATAL_ERROR "You can't use both backends, but you need to use at least one of those")
+endif()
+
 # Add library paths
 list(APPEND CMAKE_PREFIX_PATH "$ENV{LIBRARY_PATH}")
 
@@ -35,6 +42,12 @@ file(GLOB_RECURSE SOURCES
 # Define executable target
 add_executable(${PROJECT_NAME}
     ${SOURCES}
+)
+
+# Define the compile defs of request processing systems
+target_compile_definitions(${PROJECT_NAME} PRIVATE
+    $<$<BOOL:${USE_EPOLL}>:USE_EPOLL>
+    $<$<BOOL:${USE_IOURING}>:USE_IOURING>
 )
 
 # Compiler flags

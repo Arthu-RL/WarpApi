@@ -20,8 +20,12 @@ typedef int socket_t;
 
 #define WARP_API
 
+#ifdef USE_EPOLL
+#define MAX_EVENTS 8192
+#endif
+
+#define TIMERWHELL_TICK_INTERVAL 1000 // 1 sec
 #define SESSION_POOL_SIZE 32*1024
-#define EPOLL_WAIT_TIMEOUT 1000 // 1 sec
 #define MIN_REQUEST_SIZE 16
 
 #define HTTP_VERSION "HTTP/1.1"
@@ -102,6 +106,7 @@ class WARP_API HttpServer;
 
 using RequestHandler = std::function<void(const HttpRequest&, HttpResponse&)>;
 
+#ifdef USE_IOURING
 enum WARP_API OperationType : u8 {
     Read = 0,
     Write
@@ -128,5 +133,6 @@ struct WARP_API IoRequest {
     Session* session;
     OperationType optype;
 };
+#endif
 
 #endif // WARPDEFS_H

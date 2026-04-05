@@ -16,8 +16,7 @@
  */
 class WARP_API Session : public ink::TimerNode {
 public:
-    /** @brief Constructs a session with a raw socket descriptor. */
-    explicit Session(socket_t socket);
+    /** @brief Closes the underlying socket and cleans up session state on destruction. */
     ~Session();
 
     /** @brief Closes the underlying socket and cleans up session state. */
@@ -27,7 +26,45 @@ public:
     void shutdown();
 
     /** @brief Returns the raw file descriptor for this session. */
-    socket_t getSocket() const;
+    socket_t getSocket() const noexcept;
+
+public:
+    u64 lastActivityTick = 0;
+
+private:
+    bool parseRequest();
+    void handleRequest();
+
+    socket_t _socket;
+    HttpRequest _req;
+    bool _keepAlive;
+
+    ink::RingBuffer _readBuffer;
+    ink::RingBuffer _writeBuffer;
+
+#ifdef USE_EPOLL
+public:
+    /** @brief Constructs a session with a raw socket descriptor. */
+    explicit Session(socket_t socket, socket_t assignedEpollFd);
+
+    socket_t getAssignedEpollFd() const noexcept;
+
+    // Direct IO Interest Management (No EventLoop pointer needed)
+    void updateIoInterest(bool wantRead, bool wantWrite) noexcept;
+
+    // Called by the Worker Thread Loop
+    bool onReadReady();
+    bool onWriteReady();
+
+private:
+    void onWriteComplete();
+    socket_t _assignedEpollFd;
+#endif
+
+#ifdef USE_IOURING
+public:
+    /** @brief Constructs a session with a raw socket descriptor. */
+    explicit Session(socket_t socket);
 
     /**
      * @brief Prepares an SQE for a non-blocking receive operation.
@@ -52,8 +89,6 @@ public:
      * @return true if session remains active, false if it should be closed.
      */
     bool processRead(i32 bytesRead, io_uring* ring);
-
-public:
 
     bool isReadInFlight() const { return (_ioFlags & IO_READING) != 0; }
     bool isWriteInFlight() const { return (_ioFlags & IO_WRITING) != 0; }
@@ -94,18 +129,8 @@ private:
     IoRequest _readReq{this, OperationType::Read};
     IoRequest _writeReq{this, OperationType::Write};
 
-private:
-    bool parseRequest();
-    void handleRequest();
-
-    socket_t _socket;
-    HttpRequest _req;
-    bool _keepAlive;
-
     usize _lockedZcBytes = 0;
-
-    ink::RingBuffer _readBuffer;
-    ink::RingBuffer _writeBuffer;
+#endif
 };
 
 #endif // SESSION_H

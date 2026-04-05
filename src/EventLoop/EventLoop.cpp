@@ -90,6 +90,143 @@ void EventLoop::runWorker(i32 threadIdx)
         return;
     }
 
+    // TimerWheel that marks n seconds until session expires
+    // handling keep alives sessions
+    ink::TimerWheel timerWheel(settings.connection_timeout_ms/1000, TIMERWHELL_TICK_INTERVAL);
+
+    // ObjectPool to reduce session allocation
+    ObjectPool<Session, SESSION_POOL_SIZE> sessionPool;
+
+#ifdef USE_EPOLL
+    // Using one session table per thread
+    // Using Vector for O(1) access instead of Map
+    std::vector<Session*> sessionTable;
+    sessionTable.resize(MAX_EVENTS);
+#endif
+
+#ifdef USE_EPOLL
+    // Create Epoll for this thread
+    int epfd = epoll_create1(0);
+
+    // Add Listener to Epoll
+    struct epoll_event ev;
+    ev.data.fd = listenFd;
+    ev.events = EPOLLIN | EPOLLET;
+    epoll_ctl(epfd, EPOLL_CTL_ADD, listenFd, &ev);
+
+    auto releaseSession = [&](Session* s) {
+        if (!s) return;
+
+        timerWheel.unlink(s);
+        int fd = s->getSocket();
+        epoll_ctl(epfd, EPOLL_CTL_DEL, fd, nullptr);
+        s->~Session();
+        sessionPool.release(s);
+
+        if (fd < sessionTable.size())
+            sessionTable[fd] = nullptr;
+    };
+
+    struct epoll_event events[MAX_EVENTS];
+
+    while (_running)
+    {
+        u64 currentLoopTime = ink::utils::nowMillis();
+        int timeout = timerWheel.timeToNextTickMillis(currentLoopTime);
+
+        // INK_DEBUG << "[Loop] Calling epoll_wait with timeout: " << timeout << "ms";
+        int nfds = epoll_wait(epfd, events, MAX_EVENTS, timeout);
+        // INK_DEBUG << "[Loop] epoll_wait returned " << nfds << " events.";
+
+        for (int i = 0; i < nfds; ++i)
+        {
+            socket_t fd = events[i].data.fd;
+            uint32_t evs = events[i].events;
+
+            if (fd == listenFd)
+            {
+                while (true)
+                {
+                    int clientSock = accept4(
+                        listenFd, nullptr, nullptr,
+                        SOCK_NONBLOCK | SOCK_CLOEXEC
+                        );
+
+                    if (clientSock < 0)
+                    {
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                            // INK_DEBUG << "[Listener] EAGAIN reached. Done accepting.";
+                            break;
+                        }
+                        INK_DEBUG << "[Listener] Accept Error: " << strerror(errno);
+                        continue;
+                    }
+
+                    Session* session = sessionPool.acquire();
+                    new (session) Session(clientSock, epfd);
+
+                    if (clientSock >= (int)sessionTable.size())
+                    {
+                        sessionTable.resize(clientSock * 2);
+                    }
+
+                    sessionTable[clientSock] = session;
+
+                    epoll_event ev{};
+                    ev.data.fd = clientSock;
+                    ev.events = EPOLLIN | EPOLLET;
+                    epoll_ctl(epfd, EPOLL_CTL_ADD, clientSock, &ev);
+                }
+                continue;
+            }
+
+            Session* session = sessionTable[fd];
+
+            bool activity = false;
+
+            // Read
+            if (evs & (EPOLLIN | EPOLLRDHUP))
+            {
+                activity |= session->onReadReady();
+            }
+
+            // Write
+            if (session->getSocket() != SOCKET_ERROR_VALUE && (evs & EPOLLOUT))
+            {
+                activity |= session->onWriteReady();
+            }
+
+            // Error / Hangup
+            if (evs & (EPOLLERR | EPOLLHUP))
+            {
+                releaseSession(session);
+                continue;
+            }
+
+            if (activity)
+            {
+                if (currentLoopTime - session->lastActivityTick >= TIMERWHELL_TICK_INTERVAL)
+                {
+                    timerWheel.update(session);
+                    session->lastActivityTick = currentLoopTime;
+                }
+            }
+        }
+
+        while (timerWheel.timeToNextTickMillis(currentLoopTime) == 0)
+        {
+            timerWheel.processExpired([&](ink::TimerNode* n) {
+                Session* s = static_cast<Session*>(n);
+                releaseSession(s);
+            });
+        }
+    }
+
+    close(listenFd);
+    close(epfd);
+#endif
+
+#ifdef USE_IOURING
     io_uring_params io_params = {};
     io_params.sq_entries = 4096;
     io_params.cq_entries = 8192;
@@ -109,13 +246,6 @@ void EventLoop::runWorker(i32 threadIdx)
     u32 required_features = IORING_FEAT_FAST_POLL | IORING_FEAT_SINGLE_MMAP | IORING_FEAT_NODROP;
     INK_ASSERT_MSG((io_params.features & required_features) == required_features, "Params flags were not setted.");
 
-    // TimerWheel that marks n seconds until session expires
-    // handling keep alives sessions
-    ink::TimerWheel timerWheel(settings.connection_timeout_ms/1000, 1000);
-
-    // ObjectPool to reduce session allocation
-    ObjectPool<Session, SESSION_POOL_SIZE> sessionPool;
-
     // void* poolBase = sessionPool.getRawBuffer();
     // size_t poolSize = sessionPool.getRawBufferSize();
 
@@ -125,11 +255,6 @@ void EventLoop::runWorker(i32 threadIdx)
 
     // int ret = io_uring_register_buffers(&ring, &iov, 1);
     // INK_ASSERT_MSG(ret < 0, std::string("Buffer registration failed: ") + strerror(-ret));
-
-    // Using one session table per thread
-    // Using Vector for O(1) access instead of Map
-    // std::vector<Session*> sessionTable;
-    // sessionTable.resize(SESSION_POOL_SIZE);
 
     auto releaseSession = [&](Session* s) {
         INK_ASSERT_MSG(s->getStatus() == SessionStatus::Closing, "Cannot release a session that is not closing...");
@@ -286,4 +411,5 @@ void EventLoop::runWorker(i32 threadIdx)
 
     io_uring_queue_exit(&ring);
     close(listenFd);
+#endif
 }
