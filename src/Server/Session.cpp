@@ -91,6 +91,11 @@ bool Session::onReadReady()
             if (_writeBuffer.size() > 0)
             {
                 onWriteReady();
+
+                // If onWriteReady couldn't flush everything (EAGAIN),
+                // stop reading new requests so it doesn't bloat memory!
+                if (_writeBuffer.size() > 0)
+                    break;
             }
         }
         else if (bytesRead == 0)
@@ -107,13 +112,14 @@ bool Session::onReadReady()
         }
     }
 
-    // Only subscribe to EPOLLOUT if we still have data pending after the attempt above
-    updateIoInterest(true, _writeBuffer.size() > 0);
     return read;
 }
 
 bool Session::onWriteReady()
 {
+    if (_writeBuffer.size() == 0)
+        return false;
+
     bool wrote = false;
 
     while (1)
@@ -143,7 +149,6 @@ bool Session::onWriteReady()
     if (_writeBuffer.size() == 0)
         onWriteComplete();
 
-    updateIoInterest(true, _writeBuffer.size() > 0);
     return wrote;
 }
 
@@ -152,39 +157,11 @@ void Session::onWriteComplete()
     if (_keepAlive)
     {
         _req.reset();
-
-        size_t availableRead;
-        _readBuffer.getReadBuffer(availableRead);
-
-        if (availableRead > 0)
-        {
-            // We already have buffered data — parse inline
-            onReadReady();
-        }
-        else
-        {
-            // Correct: wait for READ
-            updateIoInterest(false, true);
-        }
     }
     else
     {
         close();
     }
-}
-
-void Session::updateIoInterest(bool wantRead, bool wantWrite) noexcept
-{
-    if (_socket == SOCKET_ERROR_VALUE) return;
-
-    struct epoll_event ev;
-    ev.data.fd = _socket;
-    ev.events = EPOLLET | EPOLLRDHUP;
-
-    if (wantRead)  ev.events |= EPOLLIN;
-    if (wantWrite) ev.events |= EPOLLOUT;
-
-    epoll_ctl(_assignedEpollFd, EPOLL_CTL_MOD, _socket, &ev);
 }
 #endif
 
@@ -234,11 +211,11 @@ void Session::onWriteReady(io_uring_sqe* sqe)
     updateIoState(IO_WRITING, true);
 }
 
-bool Session::processRead(i32 bytesRead, io_uring* ring)
+bool Session::processRead(i32 bytesRecv, io_uring* ring)
 {
     updateIoState(IO_READING, false);
 
-    if (bytesRead <= 0)
+    if (bytesRecv <= 0)
     {
         // If the client sent a FIN (0) or there was an error (< 0)
         // We only close immediately if our write buffer is empty.
@@ -252,15 +229,12 @@ bool Session::processRead(i32 bytesRead, io_uring* ring)
         return true;
     }
 
-    _readBuffer.advanceWritePos(bytesRead);
+    _readBuffer.advanceWritePos(bytesRecv);
 
     while (parseRequest())
     {
-        INK_LOG << "request parsed";
         handleRequest();
     }
-
-    INK_LOG << "after request handle";
 
     if (_writeBuffer.size() > 0 && !isWriteInFlight())
     {
@@ -281,7 +255,7 @@ bool Session::processRead(i32 bytesRead, io_uring* ring)
     return true;
 }
 
-bool Session::processWrite(i32 bytesRead, bool is_notif, io_uring* ring)
+bool Session::processWrite(i32 bytesSent, bool is_notif, io_uring* ring)
 {
     if (is_notif)
     {
@@ -313,7 +287,7 @@ bool Session::processWrite(i32 bytesRead, bool is_notif, io_uring* ring)
     // Send Result (CQE 1)
     updateIoState(IO_WRITING, false);
 
-    if (bytesRead < 0)
+    if (bytesSent < 0)
     {
         this->close();
         return false;
@@ -321,7 +295,7 @@ bool Session::processWrite(i32 bytesRead, bool is_notif, io_uring* ring)
 
     // Record how many bytes the kernel accepted, but DO NOT advance
     // the buffer yet. The memory is still pinned by the NIC!
-    _lockedZcBytes = bytesRead;
+    _lockedZcBytes = bytesSent;
 
     return true;
 }

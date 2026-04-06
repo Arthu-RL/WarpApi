@@ -30,11 +30,6 @@ void HttpServer::start()
     _eventLoop->start();
 
     _running = true;
-
-    // Main thread now just sleeps or handles signals
-    while(_running) {
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-    }
 }
 
 void HttpServer::stop()

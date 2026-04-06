@@ -11,15 +11,10 @@ const ink::LogLevel logSeverity = ink::LogLevel::INFO;
 const ink::LogLevel logSeverity = ink::LogLevel::TRACE;
 #endif
 
-// Global server pointer for signal handling
-HttpServer* g_server = nullptr;
+std::atomic<bool> g_shutdown_requested{false};
 
 void signalHandler(int signal) {
-    INK_INFO << "Received signal " << signal << ", shutting down...";
-    if (g_server) {
-        g_server->stop();
-    }
-    exit(signal);
+    g_shutdown_requested.store(true, std::memory_order_relaxed);
 }
 
 void increase_fd_limit(uint64_t limit) {
@@ -34,6 +29,11 @@ void increase_fd_limit(uint64_t limit) {
 int main(int /*argc*/, char** /*argv*/)
 {
     increase_fd_limit(1000000);
+
+    std::signal(SIGPIPE, SIG_IGN);
+    // Set up safe signal handlers for graceful shutdown
+    std::signal(SIGINT, signalHandler);
+    std::signal(SIGTERM, signalHandler);
 
     // Initialize logger
     INK_CORE_LOGGER->setName("WarpAPI");
@@ -62,14 +62,18 @@ int main(int /*argc*/, char** /*argv*/)
 
         // Create and configure the server
         HttpServer server;
-        g_server = &server;
-
-        // Set up signal handlers for graceful shutdown
-        std::signal(SIGINT, signalHandler);
-        std::signal(SIGTERM, signalHandler);
 
         // Start the server
         server.start();
+
+        while (!g_shutdown_requested.load(std::memory_order_relaxed))
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+
+        INK_INFO << "Shutdown signal detected. Stopping server gracefully...";
+        server.stop();
+        INK_INFO << "Server stopped. Bye!";
     }
     catch (const std::exception& e)
     {

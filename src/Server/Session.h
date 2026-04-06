@@ -49,9 +49,6 @@ public:
 
     socket_t getAssignedEpollFd() const noexcept;
 
-    // Direct IO Interest Management (No EventLoop pointer needed)
-    void updateIoInterest(bool wantRead, bool wantWrite) noexcept;
-
     // Called by the Worker Thread Loop
     bool onReadReady();
     bool onWriteReady();
@@ -82,13 +79,13 @@ public:
      * @brief Finalizes a write operation after CQE completion.
      * @return true if session remains active, false if it should be closed.
      */
-    bool processWrite(i32 bytesRead, bool is_notif, io_uring* ring);
+    bool processWrite(i32 bytesSent, bool is_notif, io_uring* ring);
 
     /**
      * @brief Processes data received from the kernel.
      * @return true if session remains active, false if it should be closed.
      */
-    bool processRead(i32 bytesRead, io_uring* ring);
+    bool processRead(i32 bytesRecv, io_uring* ring);
 
     bool isReadInFlight() const { return (_ioFlags & IO_READING) != 0; }
     bool isWriteInFlight() const { return (_ioFlags & IO_WRITING) != 0; }

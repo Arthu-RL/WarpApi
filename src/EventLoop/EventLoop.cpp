@@ -174,7 +174,7 @@ void EventLoop::runWorker(i32 threadIdx)
 
                     epoll_event ev{};
                     ev.data.fd = clientSock;
-                    ev.events = EPOLLIN | EPOLLET;
+                    ev.events = EPOLLIN | EPOLLOUT | EPOLLET;
                     epoll_ctl(epfd, EPOLL_CTL_ADD, clientSock, &ev);
                 }
                 continue;
@@ -231,7 +231,7 @@ void EventLoop::runWorker(i32 threadIdx)
     io_params.sq_entries = 4096;
     io_params.cq_entries = 8192;
     io_params.flags = IORING_SETUP_SQPOLL | IORING_SETUP_SQ_AFF;
-    io_params.sq_thread_idle = 3000;
+    io_params.sq_thread_idle = TIMERWHELL_TICK_INTERVAL;
 
     io_uring ring = {};
 
@@ -289,10 +289,21 @@ void EventLoop::runWorker(i32 threadIdx)
     // Kernel timespec format to pass on io_uring_wait_cqe_timeout;
     __kernel_timespec kts = {};
 
+    auto getSqeSafe = [&](io_uring* r) -> io_uring_sqe* {
+        io_uring_sqe* sqe = io_uring_get_sqe(r);
+        if (!sqe) {
+            // SQ Ring is full! Flush it to the kernel to free up space.
+            io_uring_submit(r);
+            sqe = io_uring_get_sqe(r);
+        }
+        return sqe;
+    };
+
     while (_running)
     {
         io_uring_cqe* cqe;
-        u64 timeout = timerWheel.timeToNextTickMillis();
+        u64 currentLoopTime = ink::utils::nowMillis();
+        u64 timeout = timerWheel.timeToNextTickMillis(currentLoopTime);
 
         kts.tv_sec  = timeout / 1000;
         kts.tv_nsec = (timeout % 1000) * 1000000;
@@ -320,7 +331,7 @@ void EventLoop::runWorker(i32 threadIdx)
                         INK_DEBUG << "[Conn] New Session: " << s << " FD: " << cqe->res;
                         timerWheel.update(s);
 
-                        io_uring_sqe* rsqe = io_uring_get_sqe(&ring);
+                        io_uring_sqe* rsqe = getSqeSafe(&ring);
                         if (rsqe)
                             s->onReadReady(rsqe);
                         else
@@ -332,11 +343,15 @@ void EventLoop::runWorker(i32 threadIdx)
                             tryFreeSession(s);
                         }
                     }
+                    else if (cqe->res != -EAGAIN && cqe->res != -ECONNABORTED)
+                    {
+                        INK_ERROR << "Multishot Accept failed: " << strerror(-cqe->res);
+                    }
 
                     if (!(cqe->flags & IORING_CQE_F_MORE))
                     {
                         INK_INFO << "Re-arming multishot listener on thread " << threadIdx;
-                        io_uring_sqe* acc_sqe = io_uring_get_sqe(&ring);
+                        io_uring_sqe* acc_sqe = getSqeSafe(&ring);
                         io_uring_prep_accept(acc_sqe, listenFd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
                         acc_sqe->ioprio |= IORING_ACCEPT_MULTISHOT;
                         io_uring_sqe_set_data64(acc_sqe, LISTENER_TAG);
@@ -383,7 +398,11 @@ void EventLoop::runWorker(i32 threadIdx)
                             }
                         }
 
-                        timerWheel.update(s);
+                        if (currentLoopTime - s->lastActivityTick >= TIMERWHELL_TICK_INTERVAL)
+                        {
+                            timerWheel.update(s);
+                            s->lastActivityTick = currentLoopTime;
+                        }
                     }
                 }
             }
@@ -391,20 +410,23 @@ void EventLoop::runWorker(i32 threadIdx)
 
         if (count > 0) io_uring_cq_advance(&ring, count);
 
-        timerWheel.processExpired([&](ink::TimerNode* n) {
-            Session* s = static_cast<Session*>(n);
+        while (timerWheel.timeToNextTickMillis(currentLoopTime) == 0)
+        {
+            timerWheel.processExpired([&](ink::TimerNode* n) {
+                Session* s = static_cast<Session*>(n);
 
-            INK_DEBUG << "[Timer] Session timed out: " << s;
+                INK_DEBUG << "[Timer] Session timed out: " << s;
 
-            s->setStatus(SessionStatus::Closing);
-            s->close();
+                s->setStatus(SessionStatus::Closing);
+                s->close();
 
-            if (!s->hasPendingIo())
-            {
-                releaseSession(s);
-                tryFreeSession(s);
-            }
-        });
+                if (!s->hasPendingIo())
+                {
+                    releaseSession(s);
+                    tryFreeSession(s);
+                }
+            });
+        }
 
         io_uring_submit(&ring);
     }

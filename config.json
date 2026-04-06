@@ -1,10 +1,10 @@
 {
   "ip": "0.0.0.0",
   "port": 41385,
-  "max_threads": 10,
+  "max_threads": 12,
   "backlog_size": 8192,
-  "connection_timeout_ms": 5000,
-  "max_request_size": 65536,
-  "max_response_size": 65536,
-  "max_body_size": 65536
+  "connection_timeout_ms": 60000,
+  "max_request_size": 16384,
+  "max_response_size": 16384,
+  "max_body_size": 16384
 }
