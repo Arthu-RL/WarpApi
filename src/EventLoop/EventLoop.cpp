@@ -97,7 +97,7 @@ void EventLoop::runWorker(i32 threadIdx)
     ink::TimerWheel timerWheel(settings.connection_timeout_ms/1000, TIMERWHELL_TICK_INTERVAL);
 
     // ObjectPool to reduce session allocation
-    ObjectPool<Session, SESSION_POOL_SIZE> sessionPool;
+    auto sessionPool = std::make_unique<ObjectPool<Session, SESSION_POOL_SIZE>>();
 
 #ifdef USE_EPOLL
     // Using one session table per thread
@@ -121,13 +121,13 @@ void EventLoop::runWorker(i32 threadIdx)
         int fd = s->getSocket();
         epoll_ctl(epfd, EPOLL_CTL_DEL, fd, nullptr);
         s->~Session();
-        sessionPool.release(s);
+        sessionPool->release(s);
 
         if (fd < sessionTable.size())
             sessionTable[fd] = nullptr;
     };
 
-    struct epoll_event events[MAX_EVENTS];
+    std::vector<struct epoll_event> events(MAX_EVENTS);
 
     while (_running)
     {
@@ -135,7 +135,7 @@ void EventLoop::runWorker(i32 threadIdx)
         int timeout = timerWheel.timeToNextTickMillis(currentLoopTime);
 
         // INK_DEBUG << "[Loop] Calling epoll_wait with timeout: " << timeout << "ms";
-        int nfds = epoll_wait(epfd, events, MAX_EVENTS, timeout);
+        int nfds = epoll_wait(epfd, events.data(), MAX_EVENTS, timeout);
         // INK_DEBUG << "[Loop] epoll_wait returned " << nfds << " events.";
 
         for (int i = 0; i < nfds; ++i)
@@ -161,7 +161,7 @@ void EventLoop::runWorker(i32 threadIdx)
                         continue;
                     }
 
-                    Session* session = sessionPool.acquire();
+                    Session* session = sessionPool->acquire();
                     new (session) Session(clientSock, epfd);
 
                     if (clientSock >= (int)sessionTable.size())
@@ -266,7 +266,7 @@ void EventLoop::runWorker(i32 threadIdx)
         INK_ASSERT_MSG(s->getStatus() == SessionStatus::Closed, "Cannot free a session that is not closed...");
         // INK_DEBUG << "[Final] Freeing session " << s;
         s->~Session();
-        sessionPool.release(s);
+        sessionPool->release(s);
     };
 
     io_uring_sqe *sqe = io_uring_get_sqe(&ring);
@@ -322,7 +322,7 @@ void EventLoop::runWorker(i32 threadIdx)
                 {
                     if (cqe->res >= 0)
                     {
-                        Session* s = sessionPool.acquire();
+                        Session* s = sessionPool->acquire();
                         new (s) Session(cqe->res);
 
                         // INK_DEBUG << "[Conn] New Session: " << s << " threadIdx: " << threadIdx;
