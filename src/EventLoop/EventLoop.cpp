@@ -5,8 +5,10 @@
 #include "Server/Session.h"
 #include "Settings/Settings.h"
 
+#ifdef USE_IOURING
 static inline char listener_marker;
 #define LISTENER_TAG ((u64)&listener_marker)
+#endif
 
 EventLoop::EventLoop() :
     _running(false)
@@ -102,9 +104,7 @@ void EventLoop::runWorker(i32 threadIdx)
     // Using Vector for O(1) access instead of Map
     std::vector<Session*> sessionTable;
     sessionTable.resize(MAX_EVENTS);
-#endif
 
-#ifdef USE_EPOLL
     // Create Epoll for this thread
     int epfd = epoll_create1(0);
 
@@ -158,7 +158,6 @@ void EventLoop::runWorker(i32 threadIdx)
                             // INK_DEBUG << "[Listener] EAGAIN reached. Done accepting.";
                             break;
                         }
-                        INK_DEBUG << "[Listener] Accept Error: " << strerror(errno);
                         continue;
                     }
 
@@ -265,12 +264,10 @@ void EventLoop::runWorker(i32 threadIdx)
 
     auto tryFreeSession = [&](Session* s) {
         INK_ASSERT_MSG(s->getStatus() == SessionStatus::Closed, "Cannot free a session that is not closed...");
-        INK_DEBUG << "[Final] Freeing session " << s;
+        // INK_DEBUG << "[Final] Freeing session " << s;
         s->~Session();
         sessionPool.release(s);
     };
-
-    INK_INFO << "Thread " << threadIdx << " listening on port " << settings.port;
 
     io_uring_sqe *sqe = io_uring_get_sqe(&ring);
     INK_ASSERT_MSG(sqe, "Sqe is null");
@@ -328,7 +325,7 @@ void EventLoop::runWorker(i32 threadIdx)
                         Session* s = sessionPool.acquire();
                         new (s) Session(cqe->res);
 
-                        INK_DEBUG << "[Conn] New Session: " << s << " FD: " << cqe->res;
+                        // INK_DEBUG << "[Conn] New Session: " << s << " threadIdx: " << threadIdx;
                         timerWheel.update(s);
 
                         io_uring_sqe* rsqe = getSqeSafe(&ring);
@@ -350,7 +347,7 @@ void EventLoop::runWorker(i32 threadIdx)
 
                     if (!(cqe->flags & IORING_CQE_F_MORE))
                     {
-                        INK_INFO << "Re-arming multishot listener on thread " << threadIdx;
+                        // INK_DEBUG << "Re-arming multishot listener on thread " << threadIdx;
                         io_uring_sqe* acc_sqe = getSqeSafe(&ring);
                         io_uring_prep_accept(acc_sqe, listenFd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
                         acc_sqe->ioprio |= IORING_ACCEPT_MULTISHOT;
@@ -366,9 +363,9 @@ void EventLoop::runWorker(i32 threadIdx)
                     bool has_more = (cqe->flags & IORING_CQE_F_MORE) != 0;
                     i32 res = cqe->res;
 
-                    INK_DEBUG << "[IO] Completion for " << s
-                              << " Op: " << (int)io_req->optype
-                              << " Res: " << res << " Notif: " << is_notif;
+                    // INK_DEBUG << "[IO] Completion for " << s
+                    //           << " Op: " << (int)io_req->optype
+                    //           << " Res: " << res << " Notif: " << is_notif;
 
                     if (s->getStatus() == SessionStatus::Closing && !s->hasPendingIo())
                     {
@@ -415,7 +412,7 @@ void EventLoop::runWorker(i32 threadIdx)
             timerWheel.processExpired([&](ink::TimerNode* n) {
                 Session* s = static_cast<Session*>(n);
 
-                INK_DEBUG << "[Timer] Session timed out: " << s;
+                // INK_DEBUG << "[Timer] Session timed out: " << s;
 
                 s->setStatus(SessionStatus::Closing);
                 s->close();
