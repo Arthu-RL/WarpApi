@@ -103,8 +103,23 @@ class WARP_API HttpResponse;
 class WARP_API Session;
 class WARP_API EventLoop;
 class WARP_API HttpServer;
+class WARP_API WebSocketContext;
 
 using RequestHandler = std::function<void(const HttpRequest&, HttpResponse&)>;
+using WebSocketOpenHandler = std::function<void(WebSocketContext&)>;
+using WebSocketMessageHandler = std::function<void(WebSocketContext&, std::string_view)>;
+using WebSocketCloseHandler = std::function<void(WebSocketContext&)>;
+
+struct WARP_API WebSocketRoute {
+    WebSocketRoute(WebSocketOpenHandler _onOpen,
+                   WebSocketMessageHandler _onMessage,
+                   WebSocketCloseHandler _onClose) :
+        onOpen(_onOpen), onMessage(_onMessage), onClose(_onClose) {}
+
+    WebSocketOpenHandler onOpen;
+    WebSocketMessageHandler onMessage;
+    WebSocketCloseHandler onClose;
+};
 
 #ifdef USE_IOURING
 enum WARP_API OperationType : u8 {

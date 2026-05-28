@@ -7,12 +7,21 @@
 #include <ink/TimerWheel.h>
 #include "WarpDefs.h"
 #include "Request/HttpRequest.h"
+#include "Server/WebSocket.h"
 
 /**
  * @class Session
- * @brief Represents an active network connection optimized for io_uring.
- * * This class manages per-connection buffers and state. It is designed to be
- * stored in a fixed-memory ObjectPool to leverage io_uring's high-performance features.
+ * @brief Pure transport layer for a single network connection.
+ *
+ * Manages the socket descriptor, read/write ring buffers, and I/O state.
+ * Protocol dispatch is handled via a lightweight ProtocolMode tag:
+ *
+ *   - Http mode      → parseRequest() + handleRequest()  (zero extra overhead)
+ *   - WebSocket mode → ws::processFrames() with the embedded WsState
+ *
+ * WebSocket framing logic lives entirely in WebSocketCodec.{h,cpp}.
+ * User callbacks receive a WebSocketContext& (never a raw Session&) so the
+ * internal transport API stays fully encapsulated.
  */
 class WARP_API Session : public ink::TimerNode {
 public:
@@ -22,7 +31,7 @@ public:
     /** @brief Closes the underlying socket and cleans up session state. */
     void close();
 
-    /** @brief Shut down the socket to cancel pending network IO gracefully. */
+    /** @brief Shuts down the socket to cancel pending network IO gracefully. */
     void shutdown();
 
     /** @brief Returns the raw file descriptor for this session. */
@@ -32,12 +41,43 @@ public:
     u64 lastActivityTick = 0;
 
 private:
+    /**
+     * @brief Parse the request stream, extracting headers and body
+     *
+     * Use integer cmp in headers parse, and, avoid allocations for the body received using string views
+     */
     bool parseRequest();
+
+    /**
+     * @brief This executes the logic for each endpoint (route) called throught a request
+     *
+     * @note This function uses to radix tree search to find the route.
+     */
     void handleRequest();
+
+    /**
+     * @brief Upgrade to websocket request if, websocket handshake headers are sent correctly according to rfc6455
+     * @link https://www.rfc-editor.org/rfc/rfc6455.html
+     *
+     * Upgrade the connction sending the handshake from server
+     */
+    bool upgradeToWebSocket();
+
+    /** @brief Encodes and queues a WebSocket frame. Called exclusively by WebSocketContext. */
+    void wsFrameSend(u8 opcode, std::string_view payload, bool fin = true);
+
+    friend class WebSocketContext;
+
+    enum class ProtocolMode : u8 {
+        Http = 0,
+        WebSocket
+    };
 
     socket_t _socket;
     HttpRequest _req;
     bool _keepAlive;
+    ProtocolMode _mode = ProtocolMode::Http;
+    ws::WsState _wsState;
 
     ink::RingBuffer _readBuffer;
     ink::RingBuffer _writeBuffer;
@@ -87,22 +127,15 @@ public:
      */
     bool processRead(i32 bytesRecv, io_uring* ring);
 
-    bool isReadInFlight() const { return (_ioFlags & IO_READING) != 0; }
-    bool isWriteInFlight() const { return (_ioFlags & IO_WRITING) != 0; }
+    bool isReadInFlight()    const { return (_ioFlags & IO_READING)    != 0; }
+    bool isWriteInFlight()   const { return (_ioFlags & IO_WRITING)    != 0; }
     bool isZcNotifInFlight() const { return (_ioFlags & IO_WAITING_ZC) != 0; }
-    bool hasPendingIo() const { return _ioFlags != IO_NONE; }
+    bool hasPendingIo()      const { return _ioFlags != IO_NONE; }
 
-    SessionStatus& getStatus() {
-        return _status;
-    }
+    SessionStatus& getStatus() { return _status; }
 
-    // Lifecycle Status Setter
-    void setStatus(SessionStatus status) {
-        _status = status;
-    }
+    void setStatus(SessionStatus status) { _status = status; }
 
-    // Usage: updateIoState(IO_READING, true)  -> Adds flag
-    // Usage: updateIoState(IO_READING, false) -> Removes flag
     void updateIoState(IoStateFlags flag, bool active) {
         if (active)
             _ioFlags = static_cast<IoStateFlags>(_ioFlags | flag);
@@ -110,18 +143,15 @@ public:
             _ioFlags = static_cast<IoStateFlags>(_ioFlags & ~flag);
     }
 
-    // Utility for quick clearing (e.g., on hard close)
-    void resetIoState() {
-        _ioFlags = IO_NONE;
-    }
-private:
+    void resetIoState() { _ioFlags = IO_NONE; }
 
+private:
     SessionStatus _status = SessionStatus::Active;
-    IoStateFlags  _ioFlags = IO_NONE;
+    IoStateFlags _ioFlags = IO_NONE;
 
     /**
      * @brief Operation scope for a session to avoid using dynamic allocs.
-     * It works like a wrapper to grab the context of the session.
+     * Works like a wrapper to grab the context of the session.
      */
     IoRequest _readReq{this, OperationType::Read};
     IoRequest _writeReq{this, OperationType::Write};

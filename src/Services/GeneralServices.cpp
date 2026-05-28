@@ -2,6 +2,7 @@
 
 #include "Request/HttpRequest.h"
 #include "Response/HttpResponse.h"
+#include "Server/WebSocketContext.h"
 
 GeneralServices::GeneralServices() {
     registerAllEndpoints();
@@ -81,5 +82,18 @@ void GeneralServices::registerAllEndpoints()
         obj["text"] = "1.0.0";
 
         response.setBody(obj.toPrettyString());
+    });
+
+    registerWebSocketEndpoint("/ws/echo", {
+        [](WebSocketContext& ctx) {
+            ctx.sendText("connected");
+        },
+        [](WebSocketContext& ctx, std::string_view payload) {
+           ctx.sendText(payload);
+        },
+        [](WebSocketContext&)
+        {
+            return;
+        }
     });
 }

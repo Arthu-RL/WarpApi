@@ -125,13 +125,13 @@ public:
 
     void addHeader(const HeaderType& key, const char* v, const size_t vLen) noexcept
     {
-        if (key != HeaderType::COUNT)
+        if (key != HeaderType::None)
             _data.headers[key] = std::string_view(v, vLen);
     }
 
     const std::string_view getHeader(const HeaderType& key) const noexcept
     {
-        if (key < HeaderType::COUNT)
+        if (key < HeaderType::None)
             return _data.headers[key];
 
         return {};
@@ -186,18 +186,19 @@ public:
         return _data;
     }
 
-    // void pPayload()
-    // {
-    //     _req.prepare_payload();
-    // }
-
     void reset() noexcept
     {
         _data.clear();
+        _presentHeaders = HeaderType::None;
+    }
+
+    HeaderType& presentHeaders() {
+        return _presentHeaders;
     }
 
 private:
     RequestData _data;
+    HeaderType _presentHeaders = HeaderType::None;
 };
 
 #endif // REQUESTMANAGER_H

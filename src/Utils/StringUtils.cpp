@@ -94,11 +94,57 @@ std::string_view StringUtils::fast_itoa(char* buf, size_t len, size_t value) noe
 {
     auto [ptr, ec] = std::to_chars(buf, buf + len, value);
 
-    if (ec != std::errc()) [[unlikely]]
+    if (ec != std::errc())
     {
         return {};
     }
 
     return std::string_view(buf, ptr - buf);
+}
+
+std::string StringUtils::base64Encode(const u8* data, usize len)
+{
+    static constexpr char kBase64Table[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    usize outLen = ((len + 2) / 3) * 4;
+    std::string out;
+
+    // resize() initializes the memory, which has a tiny overhead,
+    // but allows us to avoid push_back.
+    out.resize(outLen);
+
+    char* outPtr = out.data();
+    usize i = 0;
+    usize mainLen = len - (len % 3);
+
+    for (; i < mainLen; i += 3)
+    {
+        u32 chunk = (static_cast<u32>(data[i]) << 16) |
+                    (static_cast<u32>(data[i + 1]) << 8) |
+                    static_cast<u32>(data[i + 2]);
+
+        *outPtr++ = kBase64Table[(chunk >> 18) & 0x3F];
+        *outPtr++ = kBase64Table[(chunk >> 12) & 0x3F];
+        *outPtr++ = kBase64Table[(chunk >> 6) & 0x3F];
+        *outPtr++ = kBase64Table[chunk & 0x3F];
+    }
+
+    if (i < len)
+    {
+        u32 chunk = static_cast<u32>(data[i]) << 16;
+        bool hasSecond = (i + 1 < len);
+
+        if (hasSecond) {
+            chunk |= static_cast<u32>(data[i + 1]) << 8;
+        }
+
+        *outPtr++ = kBase64Table[(chunk >> 18) & 0x3F];
+        *outPtr++ = kBase64Table[(chunk >> 12) & 0x3F];
+        *outPtr++ = hasSecond ? kBase64Table[(chunk >> 6) & 0x3F] : '=';
+        *outPtr++ = '=';
+    }
+
+    return out;
 }
 

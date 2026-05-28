@@ -21,6 +21,8 @@ public:
 
     static size_t fast_atoi(const char* str, size_t len) noexcept;
     static std::string_view fast_itoa(char* buf, size_t len, size_t value) noexcept;
+
+    static std::string base64Encode(const u8* data, usize len);
 };
 
 #endif // STRINGUTILS_H

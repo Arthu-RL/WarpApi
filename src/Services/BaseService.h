@@ -11,11 +11,7 @@
 class WARP_API BaseService
 {
 public:
-    explicit BaseService() :
-        _serviceEndpointsCounter(0)
-    {
-        // Empty
-    };
+    explicit BaseService() = default;
     virtual ~BaseService() = default;
 
     virtual void registerAllEndpoints() = 0;
@@ -24,18 +20,17 @@ public:
                                   const Method method,
                                   RequestHandler reqHandler)
     {
-        std::shared_ptr<Endpoint> endpoint = std::make_shared<Endpoint>(route, method);
+        Endpoint* endpoint = new Endpoint(route, method);
         endpoint->setHandlerCallback(reqHandler);
         EndpointManager::getInstance()->registerEndpoint(endpoint);
-        _serviceEndpointsCounter++;
     }
 
-    const uint counter() const
+    virtual void registerWebSocketEndpoint(const std::string& route,
+                                           WebSocketRoute wsRoute)
     {
-        return _serviceEndpointsCounter;
+        WebSocketRoute* ws = new WebSocketRoute(std::move(wsRoute));
+        EndpointManager::getInstance()->registerWebSocketEndpoint(route, ws);
     }
-protected:
-    uint _serviceEndpointsCounter;
 };
 
 #endif // BASESERVICE_H

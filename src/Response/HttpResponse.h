@@ -9,18 +9,6 @@
 #include "Utils/StringUtils.h"
 #include "Utils/HeadersList.h"
 
-inline bool writeAll(ink::RingBuffer& rb, const char* data, size_t len)
-{
-    size_t written = 0;
-    while (written < len) {
-        size_t n = rb.write(data + written, len - written);
-        if (n == 0)
-            return false;
-        written += n;
-    }
-    return true;
-}
-
 struct WARP_API HttpResponseData {
     HttpResponseData() :
         status(StatusCode::ok),
@@ -42,6 +30,18 @@ class WARP_API HttpResponse
 {
 public:
     HttpResponse() : _data() {}
+
+    static bool writeAll(ink::RingBuffer& rb, const char* data, size_t len)
+    {
+        size_t written = 0;
+        while (written < len) {
+            size_t n = rb.write(data + written, len - written);
+            if (n == 0)
+                return false;
+            written += n;
+        }
+        return true;
+    }
 
     int getStatus() { return _data.status; }
     void setStatus(int status) { _data.status = status; }

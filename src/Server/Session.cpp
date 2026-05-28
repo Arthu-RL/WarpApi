@@ -1,11 +1,17 @@
 #include "Session.h"
 
+#include <cstring>
+#include <string>
+
 #include <ink/LastWish.h>
 #include <ink/utils.h>
 
+#include "WebSocket.h"
+#include "WebSocketContext.h"
 #include "EventLoop/EventLoop.h"
 #include "Managers/EndpointManager.h"
 #include "Response/HttpResponse.h"
+#include "Utils/HeadersList.h"
 #include "Utils/StringUtils.h"
 #include "Settings/Settings.h"
 
@@ -58,6 +64,11 @@ socket_t Session::getSocket() const noexcept
     return _socket;
 }
 
+void Session::wsFrameSend(u8 opcode, std::string_view payload, bool fin)
+{
+    ws::sendFrame(_writeBuffer, opcode, payload, fin);
+}
+
 #ifdef USE_EPOLL
 socket_t Session::getAssignedEpollFd() const noexcept
 {
@@ -82,18 +93,29 @@ bool Session::onReadReady()
         {
             read = true;
             _readBuffer.advanceWritePos(bytesRead);
-            while (parseRequest())
+
+            if (_mode == ProtocolMode::Http)
             {
-                handleRequest();
+                while (parseRequest())
+                    handleRequest();
+            }
+            else
+            {
+                WebSocketContext ctx(*this);
+                if (!ws::processFrames(_wsState, ctx, _readBuffer, _writeBuffer))
+                {
+                    _keepAlive = false;
+                    close();
+                    return true;
+                }
             }
 
-            // Do not wait for EPOLLOUT to trigger.
+            // Flush writes immediately without waiting for EPOLLOUT
             if (_writeBuffer.size() > 0)
             {
                 onWriteReady();
 
-                // If onWriteReady couldn't flush everything (EAGAIN),
-                // stop reading new requests so it doesn't bloat memory!
+                // If onWriteReady hit EAGAIN, stop reading to avoid memory bloat
                 if (_writeBuffer.size() > 0)
                     break;
             }
@@ -130,7 +152,6 @@ bool Session::onWriteReady()
         if (available == 0) break;
 
         ssize_t bytesSent = send(_socket, readBuf, available, 0);
-        // INK_TRACE << "Wrote " << bytesSent << " response: \n" << readBuf;
 
         if (bytesSent > 0)
         {
@@ -156,7 +177,8 @@ void Session::onWriteComplete()
 {
     if (_keepAlive)
     {
-        _req.reset();
+        if (_mode == ProtocolMode::Http)
+            _req.reset();
     }
     else
     {
@@ -174,17 +196,13 @@ void Session::onReadReady(io_uring_sqe* sqe)
     if (availableSpace == 0)
     {
         this->close();
-        // disarm the sqe
         io_uring_prep_nop(sqe);
         io_uring_sqe_set_data(sqe, nullptr);
         return;
     }
 
-    // receive the request
     io_uring_prep_recv(sqe, _socket, buf, availableSpace, 0);
-
     io_uring_sqe_set_data(sqe, &_readReq);
-
     updateIoState(IO_READING, true);
 }
 
@@ -195,7 +213,6 @@ void Session::onWriteReady(io_uring_sqe* sqe)
     if (availableSpace == 0)
     {
         this->close();
-        // disarm the sqe
         io_uring_prep_nop(sqe);
         io_uring_sqe_set_data(sqe, nullptr);
         return;
@@ -204,10 +221,7 @@ void Session::onWriteReady(io_uring_sqe* sqe)
     // MSG_NOSIGNAL prevents EPIPE from killing the process
     // if the client closed the connection.
     io_uring_prep_send_zc(sqe, _socket, readBuf, availableSpace, MSG_NOSIGNAL, 0);
-
-    // Tag the SQE so we know which session sent the data
     io_uring_sqe_set_data(sqe, &_writeReq);
-
     updateIoState(IO_WRITING, true);
 }
 
@@ -217,13 +231,10 @@ bool Session::processRead(i32 bytesRecv, io_uring* ring)
 
     if (bytesRecv <= 0)
     {
-        // If the client sent a FIN (0) or there was an error (< 0)
-        // We only close immediately if our write buffer is empty.
         if (_writeBuffer.size() == 0) {
             this->close();
             return false;
         }
-
         _keepAlive = false;
         setStatus(SessionStatus::Closing);
         return true;
@@ -231,21 +242,27 @@ bool Session::processRead(i32 bytesRecv, io_uring* ring)
 
     _readBuffer.advanceWritePos(bytesRecv);
 
-    while (parseRequest())
+    if (_mode == ProtocolMode::Http)
     {
-        handleRequest();
+        while (parseRequest())
+            handleRequest();
+    }
+    else
+    {
+        WebSocketContext ctx(*this);
+        if (!ws::processFrames(_wsState, ctx, _readBuffer, _writeBuffer))
+        {
+            setStatus(SessionStatus::Closing);
+            _keepAlive = false;
+        }
     }
 
     if (_writeBuffer.size() > 0 && !isWriteInFlight())
     {
         io_uring_sqe* wSqe = io_uring_get_sqe(ring);
-        if (wSqe)
-        {
-            onWriteReady(wSqe);
-        }
+        if (wSqe) onWriteReady(wSqe);
     }
 
-    // Re-arm Read if not reading already
     if (!isReadInFlight() && _status == SessionStatus::Active)
     {
         io_uring_sqe* rSqe = io_uring_get_sqe(ring);
@@ -259,14 +276,12 @@ bool Session::processWrite(i32 bytesSent, bool is_notif, io_uring* ring)
 {
     if (is_notif)
     {
-        // Zero-Copy Notification (CQE 2)
-        // The NIC is finally done with the memory. We can safely advance our buffer.
+        // Zero-Copy Notification (CQE 2): NIC is done with memory, advance buffer now
         updateIoState(IO_WAITING_ZC, false);
 
         _writeBuffer.advanceReadPos(_lockedZcBytes);
         _lockedZcBytes = 0;
 
-        // If we had a partial send, re-arm the rest of the buffer now
         if (_writeBuffer.size() > 0)
         {
             io_uring_sqe* wSqe = io_uring_get_sqe(ring);
@@ -274,7 +289,6 @@ bool Session::processWrite(i32 bytesSent, bool is_notif, io_uring* ring)
             return true;
         }
 
-        // Handle Keep-Alive logic only after the buffer is fully flushed and unlocked
         if (!_keepAlive)
         {
             this->close();
@@ -293,8 +307,8 @@ bool Session::processWrite(i32 bytesSent, bool is_notif, io_uring* ring)
         return false;
     }
 
-    // Record how many bytes the kernel accepted, but DO NOT advance
-    // the buffer yet. The memory is still pinned by the NIC!
+    // Record how many bytes the kernel accepted but DO NOT advance the buffer yet.
+    // The memory is still pinned by the NIC until the F_NOTIF CQE arrives.
     _lockedZcBytes = bytesSent;
 
     return true;
@@ -365,7 +379,6 @@ bool Session::parseRequest()
 
     while (__builtin_expect(p < end, 1))
     {
-        // End of headers
         if (__builtin_expect(p + 1 < end && p[0] == '\r' && p[1] == '\n', 0))
         {
             p += 2;
@@ -374,15 +387,10 @@ bool Session::parseRequest()
 
         const char* hEnd = StringUtils::find_crlf(p, end);
         if (__builtin_expect(!hEnd || hEnd + 1 >= end || hEnd[1] != '\n', 0))
-        {
             return false;
-        }
 
         const char* colon = p;
-        while (colon < hEnd && *colon != ':')
-        {
-            ++colon;
-        }
+        while (colon < hEnd && *colon != ':') ++colon;
 
         if (colon == hEnd)
         {
@@ -390,40 +398,44 @@ bool Session::parseRequest()
             continue;
         }
 
-        // const char* k = p;
         size_t klen = colon - p;
 
         const char* v = colon + 1;
-        if (v < hEnd && *v == ' ')
-        {
-            ++v;
-        }
+        if (v < hEnd && *v == ' ') ++v;
         size_t vlen = hEnd - v;
 
-        HeaderType key = HeaderType::COUNT;
+        HeaderType key = HeaderType::None;
 
         switch (klen)
         {
             case 10: // Connection
-                if (vlen == 10)
-                {
-                    _keepAlive = true;
-                }
-                else
-                {
+                if (StringUtils::iequals_small(std::string_view(v, vlen), CLOSE_CONN_HEADER))
                     _keepAlive = false;
-                }
+                else if (StringUtils::iequals_small(std::string_view(v, vlen), KEEP_ALIVE_HEADER))
+                    _keepAlive = true;
                 key = HeaderType::Connection;
                 break;
             case 14: // Content-Length
                 contentLength = StringUtils::fast_atoi(v, vlen);
                 hasContentLen = true;
                 if (contentLength > Settings::getSettings().max_body_size)
-                {
                     return false;
-                }
                 key = HeaderType::ContentLength;
                 break;
+            case 7:  // Upgrade
+                key = HeaderType::Upgrade;
+                break;
+            case 17: // Sec-WebSocket-Key
+                key = HeaderType::SecWebSocketKey;
+                break;
+            case 21: // Sec-WebSocket-Version
+                key = HeaderType::SecWebSocketVersion;
+                break;
+        }
+
+        if (key != HeaderType::None)
+        {
+            _req.presentHeaders() |= key;
         }
 
         _req.addHeader(key, v, vlen);
@@ -435,9 +447,7 @@ bool Session::parseRequest()
     {
         size_t headerSize = p - data;
         if (avail < headerSize + contentLength)
-        {
             return false;
-        }
 
         _req.setBody(std::string_view(p, contentLength));
         _readBuffer.advanceReadPos(headerSize + contentLength);
@@ -450,17 +460,89 @@ bool Session::parseRequest()
     return true;
 }
 
+bool Session::upgradeToWebSocket()
+{
+    WebSocketRoute* wsRoute = *EndpointManager::getInstance()->getWebSocketEndpoint(_req.path());
+    if (!wsRoute)
+        return false;
+
+    auto sendBadUpgradeResponse = [&]() {
+        HttpResponse response;
+        response.setStatus(StatusCode::bad_request);
+        response.setVersion(HTTP_VERSION);
+        response.addHeader(HeaderType::Server, APP_INFO_HEADER);
+        response.addHeader(HeaderType::Connection, CLOSE_CONN_HEADER);
+        response.initBody(&_writeBuffer);
+        response.setBody("Invalid WebSocket upgrade request.");
+        _keepAlive = false;
+#ifdef USE_IOURING
+        setStatus(SessionStatus::Closing);
+#endif
+    };
+
+    std::string_view upgradeHeader = _req.getHeader(HeaderType::Upgrade);
+    std::string_view connectionHeader = _req.getHeader(HeaderType::Connection);
+    std::string_view wsKey = _req.getHeader(HeaderType::SecWebSocketKey);
+    std::string_view wsVersion = _req.getHeader(HeaderType::SecWebSocketVersion);
+
+    bool validUpgrade =
+        _req.method() == Method::GET &&
+        StringUtils::iequals_small(upgradeHeader, WEBSOCKET_UPGRADE_HEADER) &&
+        StringUtils::iequals_small(connectionHeader, UPGRADE_HEADER) &&
+        !wsKey.empty() &&
+        wsVersion == WS_VERSION_13_HEADER;
+
+    if (!validUpgrade)
+    {
+        sendBadUpgradeResponse();
+        return true;
+    }
+
+    char material[64];
+    size_t matLen = wsKey.size() + ws::kWsGuid.size();
+    std::memcpy(material, wsKey.data(), wsKey.size());
+    std::memcpy(material + wsKey.size(), ws::kWsGuid.data(), ws::kWsGuid.size());
+
+    auto digest = ws::sha1Digest(std::string_view(material, matLen));
+    std::string accept = StringUtils::base64Encode(digest.data(), digest.size());
+
+    constexpr std::string_view hsPart1 = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ";
+    constexpr std::string_view hsPart2 = "\r\n\r\n";
+
+    HttpResponse::writeAll(_writeBuffer, hsPart1.data(), hsPart1.size());
+    HttpResponse::writeAll(_writeBuffer, accept.data(), accept.size());
+    HttpResponse::writeAll(_writeBuffer, hsPart2.data(), hsPart2.size());
+
+    _mode = ProtocolMode::WebSocket;
+    _wsState.route = wsRoute;
+    _wsState.closeSent = false;
+    _keepAlive = true;
+    _req.reset();
+
+    if (_wsState.route->onOpen)
+    {
+        WebSocketContext ctx(*this);
+        _wsState.route->onOpen(ctx);
+    }
+
+    return true;
+}
 
 void Session::handleRequest()
 {
-    // auto start = std::chrono::high_resolution_clock::now();
+    HeaderType& headers = _req.presentHeaders();
+
+    if (hasHeader(headers, HeaderType::Upgrade | HeaderType::SecWebSocketKey | HeaderType::SecWebSocketVersion))
+    {
+        upgradeToWebSocket();
+        return;
+    }
 
     HttpResponse response;
     response.setVersion(HTTP_VERSION);
     response.addHeader(HeaderType::Server, APP_INFO_HEADER);
     response.initBody(&_writeBuffer);
 
-    // Set Connection header based on keep-alive
     if (_keepAlive)
     {
         response.addHeader(HeaderType::Connection, KEEP_ALIVE_HEADER);
@@ -468,8 +550,6 @@ void Session::handleRequest()
     else
     {
         response.addHeader(HeaderType::Connection, CLOSE_CONN_HEADER);
-        // If no keep-alive, mark the status as Closing
-        // so processRead/Write know to shut down after the buffer is flushed.
 #ifdef USE_IOURING
         setStatus(SessionStatus::Closing);
 #endif
@@ -477,7 +557,7 @@ void Session::handleRequest()
 
     try
     {
-        Endpoint* endpoint = EndpointManager::getInstance()->getEndpoint(_req.method(), _req.path());
+        Endpoint* endpoint = *EndpointManager::getInstance()->getEndpoint(_req.method(), _req.path());
 
         if (endpoint != nullptr)
         {
@@ -502,12 +582,4 @@ void Session::handleRequest()
         }
         response.setBody("Internal Server error: " + std::string(e.what()));
     }
-
-    // auto end = std::chrono::high_resolution_clock::now();
-    // std::chrono::duration<double> elapsed = end - start;
-
-    // INK_INFO << ">> " << (int)response.getStatus() << " "
-    //          << (int)_req.method() << " "
-    //          << _req.path() << " "
-    //          << std::fixed << std::setprecision(4) << elapsed.count() << 's';
 }

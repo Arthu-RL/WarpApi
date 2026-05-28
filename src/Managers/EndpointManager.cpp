@@ -1,6 +1,6 @@
 #include "EndpointManager.h"
 
-EndpointManager::EndpointManager() : _endpoints_map({})
+EndpointManager::EndpointManager()
 {
 
 };
@@ -16,7 +16,7 @@ EndpointManager* EndpointManager::getInstance()
     return &instance;
 }
 
-void EndpointManager::registerEndpoint(std::shared_ptr<Endpoint> endpoint)
+void EndpointManager::registerEndpoint(Endpoint* endpoint)
 {
     auto& tree = _endpoints_map[endpoint->getMethod()];
 
@@ -26,12 +26,26 @@ void EndpointManager::registerEndpoint(std::shared_ptr<Endpoint> endpoint)
     tree.insert(endpoint->getRoute(), endpoint);
 }
 
-Endpoint* EndpointManager::getEndpoint(const Method& method, const std::string_view& route)
+void EndpointManager::registerWebSocketEndpoint(const std::string& route, WebSocketRoute* wsRoute)
 {
-    return _endpoints_map[method].get(route)->get();
+    auto& tree = _wsEndpoints[0];
+    if (tree.get(route) != nullptr)
+        throw std::runtime_error("Duplicated websocket route: " + route);
+
+    tree.insert(route, wsRoute);
 }
 
-uint EndpointManager::count()
+Endpoint** EndpointManager::getEndpoint(const Method& method, const std::string_view& route)
 {
-    return _endpoints_map.size();
+    return _endpoints_map[method].get(route);
+}
+
+WebSocketRoute** EndpointManager::getWebSocketEndpoint(const std::string_view& route)
+{
+    return _wsEndpoints[0].get(route);
+}
+
+u32 EndpointManager::count() const
+{
+    return _endpoints_map.size()+_wsEndpoints.size();
 }

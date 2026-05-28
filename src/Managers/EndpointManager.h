@@ -3,12 +3,12 @@
 
 #pragma once
 
-#include <memory>
 #include <ink/InkixTree.h>
 
 #include "Endpoint/Endpoint.h"
 
-using EndpointTable = std::array<ink::InkixTree<std::shared_ptr<Endpoint>>, Method::UNKNOWN + 1>;
+using EndpointTable = std::array<ink::InkixTree<Endpoint*>, Method::UNKNOWN + 1>;
+using WebSocketEndpointTable = std::array<ink::InkixTree<WebSocketRoute*>, 1>;
 
 class WARP_API EndpointManager
 {
@@ -18,14 +18,17 @@ public:
 
     static EndpointManager* getInstance();
 
-    void registerEndpoint(std::shared_ptr<Endpoint> endpoint);
+    void registerEndpoint(Endpoint* route);
+    void registerWebSocketEndpoint(const std::string& route, WebSocketRoute* wsRoute);
 
-    Endpoint* getEndpoint(const Method& method, const std::string_view& route);
+    Endpoint** getEndpoint(const Method& method, const std::string_view& route);
+    WebSocketRoute** getWebSocketEndpoint(const std::string_view& route);
 
-    uint count();
+    u32 count() const;
 
 private:
     EndpointTable _endpoints_map;
+    WebSocketEndpointTable _wsEndpoints;
 };
 
 #endif // ENDPOINTMANAGER_H
