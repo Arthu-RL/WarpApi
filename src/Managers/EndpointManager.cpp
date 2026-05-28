@@ -35,14 +35,14 @@ void EndpointManager::registerWebSocketEndpoint(const std::string& route, WebSoc
     tree.insert(route, wsRoute);
 }
 
-Endpoint** EndpointManager::getEndpoint(const Method& method, const std::string_view& route)
+Endpoint* EndpointManager::getEndpoint(const Method& method, const std::string_view& route)
 {
-    return _endpoints_map[method].get(route);
+    return _endpoints_map[method].getCopy(route);
 }
 
-WebSocketRoute** EndpointManager::getWebSocketEndpoint(const std::string_view& route)
+WebSocketRoute* EndpointManager::getWebSocketEndpoint(const std::string_view& route)
 {
-    return _wsEndpoints[0].get(route);
+    return _wsEndpoints[0].getCopy(route);
 }
 
 u32 EndpointManager::count() const

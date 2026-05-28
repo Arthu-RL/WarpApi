@@ -462,7 +462,7 @@ bool Session::parseRequest()
 
 bool Session::upgradeToWebSocket()
 {
-    WebSocketRoute* wsRoute = *EndpointManager::getInstance()->getWebSocketEndpoint(_req.path());
+    WebSocketRoute* wsRoute = EndpointManager::getInstance()->getWebSocketEndpoint(_req.path());
     if (!wsRoute)
         return false;
 
@@ -557,7 +557,7 @@ void Session::handleRequest()
 
     try
     {
-        Endpoint* endpoint = *EndpointManager::getInstance()->getEndpoint(_req.method(), _req.path());
+        Endpoint* endpoint = EndpointManager::getInstance()->getEndpoint(_req.method(), _req.path());
 
         if (endpoint != nullptr)
         {

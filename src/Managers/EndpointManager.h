@@ -21,8 +21,8 @@ public:
     void registerEndpoint(Endpoint* route);
     void registerWebSocketEndpoint(const std::string& route, WebSocketRoute* wsRoute);
 
-    Endpoint** getEndpoint(const Method& method, const std::string_view& route);
-    WebSocketRoute** getWebSocketEndpoint(const std::string_view& route);
+    Endpoint* getEndpoint(const Method& method, const std::string_view& route);
+    WebSocketRoute* getWebSocketEndpoint(const std::string_view& route);
 
     u32 count() const;
 
