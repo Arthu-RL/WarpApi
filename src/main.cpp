@@ -13,25 +13,90 @@ const ink::LogLevel logSeverity = ink::LogLevel::TRACE;
 
 std::atomic<bool> g_shutdown_requested{false};
 
-void signalHandler(int signal) {
+void signalHandler(int /*signal*/) {
     g_shutdown_requested.store(true, std::memory_order_relaxed);
 }
 
-void increase_fd_limit(uint64_t limit) {
-    struct rlimit rl;
-    rl.rlim_cur = limit; // Soft limit
-    rl.rlim_max = limit; // Hard limit
-    if (setrlimit(RLIMIT_NOFILE, &rl) != 0) {
-        perror("setrlimit failed");
+/**
+ * @brief Raises the descriptor limit as far as the hard limit allows.
+ *
+ * Asking for a soft limit above the hard limit fails outright unless the
+ * process holds CAP_SYS_RESOURCE, so clamp instead of losing the raise
+ * entirely on an unprivileged run.
+ */
+static void increase_fd_limit(rlim_t desired)
+{
+    struct rlimit rl{};
+    if (getrlimit(RLIMIT_NOFILE, &rl) != 0) {
+        INK_WARN << "getrlimit(RLIMIT_NOFILE) failed: " << strerror(errno);
+        return;
     }
+
+    const rlim_t hard = rl.rlim_max;
+    const rlim_t target = (hard == RLIM_INFINITY) ? desired : std::min(desired, hard);
+
+    if (rl.rlim_cur >= target)
+        return;
+
+    struct rlimit want{};
+    want.rlim_cur = target;
+    want.rlim_max = rl.rlim_max;
+
+    if (setrlimit(RLIMIT_NOFILE, &want) != 0) {
+        INK_WARN << "Could not raise RLIMIT_NOFILE to " << target << ": " << strerror(errno);
+        return;
+    }
+
+    INK_INFO << "Open file descriptor limit raised to " << target;
 }
+
+#ifdef USE_IOURING
+/**
+ * @brief Raises RLIMIT_MEMLOCK as far as the hard limit allows.
+ *
+ * Every io_uring instance mlock()s its SQ/CQ rings, charged against this
+ * limit. Containers default to 8MB, which is enough for only a handful of
+ * worker threads; leaving it there silently blackholes whichever
+ * SO_REUSEPORT shards fail to come up. Same clamp-to-hard-limit strategy as
+ * the fd limit above, since we may not hold CAP_SYS_RESOURCE.
+ */
+static void increase_memlock_limit(rlim_t desired)
+{
+    struct rlimit rl{};
+    if (getrlimit(RLIMIT_MEMLOCK, &rl) != 0) {
+        INK_WARN << "getrlimit(RLIMIT_MEMLOCK) failed: " << strerror(errno);
+        return;
+    }
+
+    const rlim_t hard = rl.rlim_max;
+    const rlim_t target = (hard == RLIM_INFINITY) ? desired : std::min(desired, hard);
+
+    if (rl.rlim_cur >= target)
+        return;
+
+    struct rlimit want{};
+    want.rlim_cur = target;
+    want.rlim_max = rl.rlim_max;
+
+    if (setrlimit(RLIMIT_MEMLOCK, &want) != 0) {
+        INK_WARN << "Could not raise RLIMIT_MEMLOCK to " << target
+                 << " bytes; some io_uring shards may fail to start: " << strerror(errno);
+        return;
+    }
+
+    INK_INFO << "Locked memory limit raised to " << target << " bytes";
+}
+#endif
 
 int main(int /*argc*/, char** /*argv*/)
 {
     increase_fd_limit(1000000);
+#ifdef USE_IOURING
+    increase_memlock_limit(256u * 1024 * 1024);
+#endif
 
+    // A peer that closes mid-write must not take the process down with it.
     std::signal(SIGPIPE, SIG_IGN);
-    // Set up safe signal handlers for graceful shutdown
     std::signal(SIGINT, signalHandler);
     std::signal(SIGTERM, signalHandler);
 
@@ -45,25 +110,31 @@ int main(int /*argc*/, char** /*argv*/)
     ink::EnhancedJson appConfig = ink::EnhancedJson::loadFromFile("./config.json");
     if (appConfig.empty()) {
         INK_ERROR << "Failed to load config.json";
-        std::exit(EXIT_FAILURE);
+        return EXIT_FAILURE;
     }
-    SettingsData settings = Settings(appConfig).getSettings();
+
+    Settings settingsLoader(appConfig);
+    if (!Settings::isValid()) {
+        INK_ERROR << "Invalid configuration; refusing to start.";
+        return EXIT_FAILURE;
+    }
 
     INK_INFO << "WarpAPI settings loaded.";
 
-    try {
-        // Initialize endpoint manager
+    try
+    {
         EndpointManager* endpointManager = EndpointManager::getInstance();
 
-        // Register services/endpoints
+        // Register services/endpoints. Everything must be registered before the
+        // workers start: freeze() seals the registry and builds the lookup
+        // index, and from then on it is read-only — which is precisely what
+        // lets every worker query it without any synchronisation.
         GeneralServices generalServices;
+        endpointManager->freeze();
 
         INK_INFO << "Registered endpoints: " << endpointManager->count();
 
-        // Create and configure the server
         HttpServer server;
-
-        // Start the server
         server.start();
 
         while (!g_shutdown_requested.load(std::memory_order_relaxed))

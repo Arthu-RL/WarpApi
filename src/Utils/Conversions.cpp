@@ -1,6 +1,8 @@
 #include "Conversions.h"
 
 #include <algorithm>
+#include <array>
+#include <cctype>
 
 Conversions::Conversions() {}
 
@@ -31,40 +33,43 @@ std::string Conversions::urlEncode(std::string_view input)
 
 std::string Conversions::urlDecode(std::string_view input)
 {
+    // Generated rather than written out by hand: a hand-laid table had its
+    // digit row one block too far in, so every %XX escape decoded to NUL.
+    // 0xFF marks "not a hex digit", which a table of plain zeroes could not
+    // distinguish from a legitimate 0.
+    static constexpr auto hexval = [] {
+        std::array<unsigned char, 256> t{};
+        t.fill(0xFF);
+        for (int c = '0'; c <= '9'; ++c) t[c] = static_cast<unsigned char>(c - '0');
+        for (int c = 'A'; c <= 'F'; ++c) t[c] = static_cast<unsigned char>(c - 'A' + 10);
+        for (int c = 'a'; c <= 'f'; ++c) t[c] = static_cast<unsigned char>(c - 'a' + 10);
+        return t;
+    }();
+
     std::string result;
     result.reserve(input.size());
 
-    static constexpr char hexval[256] = { /* lookup table for 0-9A-Fa-f -> 0-15 */
-        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,1,2,3,4,5,6,7,8,9,0,0,0,0,0,0,
-        10,11,12,13,14,15,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-        0,10,11,12,13,14,15 // A-F
-    };
+    for (size_t i = 0; i < input.size(); ++i)
+    {
+        const char c = input[i];
 
-    for (size_t i = 0; i < input.size(); ++i) {
-        if (input[i] == '%')
+        if (c == '%' && i + 2 < input.size())
         {
-            if (i + 2 < input.size())
+            const unsigned char h1 = hexval[static_cast<unsigned char>(input[i + 1])];
+            const unsigned char h2 = hexval[static_cast<unsigned char>(input[i + 2])];
+
+            if (h1 != 0xFF && h2 != 0xFF)
             {
-                unsigned char h1 = hexval[static_cast<unsigned char>(input[++i])];
-                unsigned char h2 = hexval[static_cast<unsigned char>(input[++i])];
-                if (h1 < 16 && h2 < 16)
-                {
-                    result += static_cast<char>((h1 << 4) | h2);
-                    continue;
-                }
+                result += static_cast<char>((h1 << 4) | h2);
+                i += 2;
+                continue;
             }
+            // Not a valid escape: keep the '%' verbatim instead of swallowing it.
         }
-        else if (input[i] == '+')
-        {
-            result += ' ';
-        }
-        else
-        {
-            result += input[i];
-        }
+
+        result += (c == '+') ? ' ' : c;
     }
+
     return result;
 }
 

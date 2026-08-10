@@ -29,18 +29,31 @@ public:
     WebSocketContext(const WebSocketContext&) = delete;
     WebSocketContext& operator=(const WebSocketContext&) = delete;
 
-    /** @brief Send a UTF-8 text frame to the client. */
-    void sendText(std::string_view payload);
+    /** @brief Send a UTF-8 text frame. Returns false if the send buffer is exhausted. */
+    bool sendText(std::string_view payload);
 
-    /** @brief Send a binary frame to the client. */
-    void sendBinary(std::string_view payload);
+    /** @brief Send a binary frame. Returns false if the send buffer is exhausted. */
+    bool sendBinary(std::string_view payload);
+
+    /** @brief Send an unsolicited ping (payload capped at 125 bytes). */
+    bool sendPing(std::string_view payload = {});
 
     /**
      * @brief Initiate a graceful close handshake.
-     * @param code  WebSocket status code (default 1000 = normal closure).
-     * @param reason Optional close reason string (max 123 bytes).
+     *
+     * The close frame is queued and flushed before the socket is shut down, so
+     * the peer always observes a well-formed closing handshake.
+     *
+     * @param code   WebSocket status code (default 1000 = normal closure).
+     * @param reason Optional close reason (truncated to 123 bytes).
      */
     void close(u16 code = 1000, std::string_view reason = {});
+
+    /** @brief False once a close frame has been queued in either direction. */
+    bool isOpen() const noexcept;
+
+    /** @brief Bytes queued for this connection but not yet handed to the kernel. */
+    usize pendingBytes() const noexcept;
 
 private:
     Session& _session;

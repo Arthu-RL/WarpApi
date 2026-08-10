@@ -21,11 +21,12 @@ typedef int socket_t;
 #define WARP_API
 
 #ifdef USE_EPOLL
-#define MAX_EVENTS 8192
+#define MAX_EVENTS 4096
 #endif
 
 #define TIMERWHELL_TICK_INTERVAL 1000 // 1 sec
-#define SESSION_POOL_SIZE 32*1024
+// Sessions pre-allocated per worker; the pool doubles on demand.
+#define SESSION_POOL_SIZE 4096
 #define MIN_REQUEST_SIZE 16
 
 #define HTTP_VERSION "HTTP/1.1"
@@ -87,7 +88,9 @@ enum WARP_API StatusCode : u32 {
     unsupported_media_type = 415,
     range_not_satisfiable = 416,
     expectation_failed = 417,
+    upgrade_required = 426,
     too_many_requests = 429,
+    request_header_fields_too_large = 431,
 
     // 5xx Server Errors
     internal_server_error = 500,
@@ -107,7 +110,8 @@ class WARP_API WebSocketContext;
 
 using RequestHandler = std::function<void(const HttpRequest&, HttpResponse&)>;
 using WebSocketOpenHandler = std::function<void(WebSocketContext&)>;
-using WebSocketMessageHandler = std::function<void(WebSocketContext&, std::string_view)>;
+/// @param isBinary true for a WS_OP_BINARY message, false for WS_OP_TEXT.
+using WebSocketMessageHandler = std::function<void(WebSocketContext&, std::string_view, bool isBinary)>;
 using WebSocketCloseHandler = std::function<void(WebSocketContext&)>;
 
 struct WARP_API WebSocketRoute {

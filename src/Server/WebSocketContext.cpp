@@ -1,26 +1,35 @@
 #include "WebSocketContext.h"
 #include "Session.h"
 
-void WebSocketContext::sendText(std::string_view payload)
+bool WebSocketContext::sendText(std::string_view payload)
 {
-    _session.wsFrameSend(ws::WS_OP_TEXT, payload);
+    return _session.wsFrameSend(ws::WS_OP_TEXT, payload);
 }
 
-void WebSocketContext::sendBinary(std::string_view payload)
+bool WebSocketContext::sendBinary(std::string_view payload)
 {
-    _session.wsFrameSend(ws::WS_OP_BINARY, payload);
+    return _session.wsFrameSend(ws::WS_OP_BINARY, payload);
+}
+
+bool WebSocketContext::sendPing(std::string_view payload)
+{
+    if (payload.size() > ws::WS_CONTROL_MAX_PAYLOAD)
+        payload = payload.substr(0, ws::WS_CONTROL_MAX_PAYLOAD);
+
+    return _session.wsFrameSend(ws::WS_OP_PING, payload);
 }
 
 void WebSocketContext::close(u16 code, std::string_view reason)
 {
-    // Close payload: 2-byte big-endian status code followed by optional reason
-    char buf[125 + 2];
-    buf[0] = static_cast<char>((code >> 8) & 0xFF);
-    buf[1] = static_cast<char>(code & 0xFF);
+    _session.wsClose(code, reason);
+}
 
-    usize reasonLen = reason.size() > 123 ? 123 : reason.size();
-    if (reasonLen > 0)
-        std::memcpy(buf + 2, reason.data(), reasonLen);
+bool WebSocketContext::isOpen() const noexcept
+{
+    return _session.wsIsOpen();
+}
 
-    _session.wsFrameSend(ws::WS_OP_CLOSE, std::string_view(buf, 2 + reasonLen));
+usize WebSocketContext::pendingBytes() const noexcept
+{
+    return _session.pendingWriteBytes();
 }

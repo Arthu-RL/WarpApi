@@ -1,80 +1,90 @@
 #ifndef HEADERSLIST_H
 #define HEADERSLIST_H
 
-// Common headers
+#pragma once
+
+#include "WarpDefs.h"
+#include <array>
+#include <string_view>
+
+// Common header values
 #define APP_INFO_HEADER "WarpApi/1.0"
 #define KEEP_ALIVE_HEADER "keep-alive"
 #define CLOSE_CONN_HEADER "close"
 #define UPGRADE_HEADER "Upgrade"
 #define WEBSOCKET_UPGRADE_HEADER "websocket"
 #define WS_VERSION_13_HEADER "13"
+#define DEFAULT_CONTENT_TYPE "application/json"
+#define TEXT_CONTENT_TYPE "text/plain"
 
-#include "WarpDefs.h"
-#include <array>
-#include <string_view>
+/**
+ * The single source of truth for every header WarpApi knows about.
+ *
+ * X(enumerator, wire name)
+ *
+ * The enumerator is a dense *ordinal* used to index the per-message header
+ * slot arrays. Presence is tracked separately in a HeaderMask bitmask
+ * (see headerBit()); mixing the two up silently corrupts memory, so the two
+ * concepts are deliberately kept in different types.
+ */
+#define HEADER_LIST(X)                                    \
+    X(Server,                 "Server")                   \
+    X(Date,                   "Date")                     \
+    X(ContentType,            "Content-Type")             \
+    X(ContentLength,          "Content-Length")           \
+    X(Connection,             "Connection")               \
+    X(UserAgent,              "User-Agent")               \
+    X(Accept,                 "Accept")                   \
+    X(AcceptEncoding,         "Accept-Encoding")          \
+    X(Host,                   "Host")                     \
+    X(Authorization,          "Authorization")            \
+    X(CacheControl,           "Cache-Control")            \
+    X(TransferEncoding,       "Transfer-Encoding")        \
+    X(Expect,                 "Expect")                   \
+    X(Upgrade,                "Upgrade")                  \
+    X(SecWebSocketKey,        "Sec-WebSocket-Key")        \
+    X(SecWebSocketVersion,    "Sec-WebSocket-Version")    \
+    X(SecWebSocketProtocol,   "Sec-WebSocket-Protocol")   \
+    X(SecWebSocketAccept,     "Sec-WebSocket-Accept")
 
-#define HEADER_LIST(X) \
-    X(Server, "Server", 0) \
-    X(ContentType, "Content-Type", 1) \
-    X(ContentLength, "Content-Length", 2) \
-    X(Connection, "Connection", 3) \
-    X(UserAgent, "User-Agent", 4) \
-    X(Accept, "Accept", 5) \
-    X(AcceptEncoding, "Accept-Encoding", 6) \
-    X(Host, "Host", 7) \
-    X(Authorization, "Authorization", 8) \
-    X(CacheControl, "Cache-Control", 9) \
-    X(Upgrade, "Upgrade", 10) \
-    X(SecWebSocketKey, "Sec-WebSocket-Key", 11) \
-    X(SecWebSocketVersion, "Sec-WebSocket-Version", 12) \
-    X(SecWebSocketAccept, "Sec-WebSocket-Accept", 13)
-
-enum WARP_API HeaderType : i32
+enum WARP_API HeaderType : u32
 {
-    None = 0,
+#define X(name, str) name,
+    HEADER_LIST(X)
+#undef X
+    HeaderCount,
+    // Returned by the parser for any header we do not track.
+    HeaderUnknown = HeaderCount
+};
 
-#define X(name, str, bit) name = (1 << bit),
+#define MAX_HEADERS_SIZE (static_cast<usize>(HeaderType::HeaderCount))
+
+inline constexpr std::array<std::string_view, MAX_HEADERS_SIZE> HeaderStrings = {
+#define X(name, str) std::string_view(str),
     HEADER_LIST(X)
 #undef X
 };
 
-constexpr std::array<std::string_view, 14> HeaderStrings = {
-#define X(name, str, bit) str,
-    HEADER_LIST(X)
-#undef X
-};
+/** Bitmask of the headers present in a message: one bit per HeaderType ordinal. */
+using HeaderMask = u32;
 
-#define MAX_HEADERS_SIZE HeaderStrings.size()
+static_assert(HeaderType::HeaderCount <= 32,
+              "HeaderMask is a u32; adding more than 32 headers needs a wider mask type");
 
-struct Header
+inline constexpr HeaderMask headerBit(HeaderType h) noexcept
 {
-    HeaderType key;
-    std::string_view value;
-};
-
-inline constexpr HeaderType operator|(HeaderType lhs, HeaderType rhs)
-{
-    return static_cast<HeaderType>(
-        static_cast<i32>(lhs) |
-        static_cast<i32>(rhs)
-        );
+    return (h < HeaderType::HeaderCount) ? (HeaderMask{1} << static_cast<u32>(h)) : HeaderMask{0};
 }
 
-inline constexpr HeaderType operator&(HeaderType lhs, HeaderType rhs)
+inline constexpr HeaderMask headerBits() noexcept { return 0; }
+
+template <typename... Rest>
+inline constexpr HeaderMask headerBits(HeaderType first, Rest... rest) noexcept
 {
-    return static_cast<HeaderType>(
-        static_cast<i32>(lhs) &
-        static_cast<i32>(rhs)
-        );
+    return headerBit(first) | headerBits(rest...);
 }
 
-inline HeaderType& operator|=(HeaderType& lhs, HeaderType rhs)
-{
-    lhs = lhs | rhs;
-    return lhs;
-}
-
-inline bool hasHeader(HeaderType flags, HeaderType required)
+inline constexpr bool hasHeader(HeaderMask flags, HeaderMask required) noexcept
 {
     return (flags & required) == required;
 }

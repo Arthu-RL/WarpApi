@@ -10,75 +10,70 @@ GeneralServices::GeneralServices() {
 
 void GeneralServices::registerAllEndpoints()
 {
-    registerEndpoint("/",Method::GET,
-                     [&](const HttpRequest& request, HttpResponse& response)
+    registerEndpoint("/", Method::GET,
+                     [](const HttpRequest&, HttpResponse& response)
     {
-        // response.setHeader(boost::beast::http::field::connection, "keep-alive");
-        ink::EnhancedJson meta_obj = ink::EnhancedJson::meta();
-        response.setBody(meta_obj.toPrettyString());
+        response.setBody(ink::EnhancedJsonUtils::meta_info().toPrettyString());
+    });
+
+    // Cheapest possible route: a constant body, no allocation, no serialisation.
+    // Use this one to measure the framework rather than the JSON library.
+    registerEndpoint("/plaintext", Method::GET,
+                     [](const HttpRequest&, HttpResponse& response)
+    {
+        response.setContentType(TEXT_CONTENT_TYPE);
+        response.setBody("Hello, World!");
+    });
+
+    registerEndpoint("/json", Method::GET,
+                     [](const HttpRequest&, HttpResponse& response)
+    {
+        response.setBody(R"({"message":"Hello, World!"})");
     });
 
     registerEndpoint("/test", Method::GET,
-                     [&](const HttpRequest& request, HttpResponse& response)
+                     [](const HttpRequest& request, HttpResponse& response)
     {
-        // response.setHeader(boost::beast::http::field::connection, "keep-alive");
-        const auto& params = request.queryParams();
-        const auto& body = request.body();
-        auto jObj = ink::EnhancedJsonUtils::loadFromString(body.data());
-
         auto result = ink::EnhancedJson();
 
-        for (auto it=params.begin(); it != params.end(); ++it)
-        {
-            result[it->first] = it->second;
-        }
+        for (const auto& [key, value] : request.queryParams())
+            result[key] = value;
 
-        for (auto it=jObj.begin(); it != jObj.end(); ++it)
+        const auto body = request.body();
+        if (!body.empty())
         {
-            result[it.key()] = it.value().get<std::string>();
+            // The body is a view into the connection buffer and is *not* NUL
+            // terminated, so it has to be sized explicitly.
+            auto jObj = ink::EnhancedJsonUtils::loadFromString(std::string(body));
+            for (auto it = jObj.begin(); it != jObj.end(); ++it)
+                result[it.key()] = it.value();
         }
 
         response.setBody(result.toPrettyString());
-
-        // FOR ENDPOINT VALIDATION
-
-        // auto it = jObj.find("test_body");
-        // if (it != jObj.end())
-        // {
-        //     obj[it.key()] = it.value().get<std::string>();
-        // }
-
-        // response.setStatus(http::status::bad_request);
-        // response.setBody("Expected `test_id` param.");
     });
 
     registerEndpoint("/apibenchmark", Method::POST,
-    [&](const HttpRequest& request, HttpResponse& response)
+                     [](const HttpRequest& request, HttpResponse& response)
     {
-        const auto& body = request.body();
-        response.setBody(body);
+        response.setBody(request.body());
     });
 
     registerEndpoint("/health", Method::GET,
-                     [&](const HttpRequest& request, HttpResponse& response)
+                     [](const HttpRequest&, HttpResponse& response)
     {
         auto obj = ink::EnhancedJson();
         obj["status"] = "ok";
-        // for (auto& header : request.headers())
-        // {
-        //     INK_LOG << header.first << ": " << header.second;
-        // }
 
         response.setBody(obj.toCompactString());
     });
 
     registerEndpoint("/version", Method::GET,
-                     [&](const HttpRequest& request, HttpResponse& response)
+                     [](const HttpRequest&, HttpResponse& response)
     {
         auto obj = ink::EnhancedJson();
         obj["major"] = 1;
-        obj["patch"] = 0;
         obj["minor"] = 0;
+        obj["patch"] = 0;
         obj["text"] = "1.0.0";
 
         response.setBody(obj.toPrettyString());
@@ -88,12 +83,14 @@ void GeneralServices::registerAllEndpoints()
         [](WebSocketContext& ctx) {
             ctx.sendText("connected");
         },
-        [](WebSocketContext& ctx, std::string_view payload) {
-           ctx.sendText(payload);
+        [](WebSocketContext& ctx, std::string_view payload, bool isBinary) {
+            if (isBinary)
+                ctx.sendBinary(payload);
+            else
+                ctx.sendText(payload);
         },
-        [](WebSocketContext&)
-        {
-            return;
+        [](WebSocketContext&) {
+            // Nothing to release for an echo route.
         }
     });
 }

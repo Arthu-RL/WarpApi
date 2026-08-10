@@ -1,68 +1,102 @@
 #ifndef WEBSOCKET_H
 #define WEBSOCKET_H
 
+#pragma once
+
 #include <openssl/sha.h>
+#include <string>
+
 #include "WarpDefs.h"
+#include "Utils/ByteBuffer.h"
 
 namespace ws {
 
-// WebSocket Globally Unique Identifier
+// WebSocket Globally Unique Identifier (RFC 6455 §1.3)
 constexpr std::string_view kWsGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 constexpr usize WS_CONTROL_MAX_PAYLOAD = 125;
+constexpr usize WS_MAX_KEY_LEN = 32;
 
-enum WsMessageTye : u8 {
+enum WsOpcode : u8 {
     WS_OP_CONTINUATION = 0x0,
-    WS_OP_TEXT = 0x1,
-    WS_OP_BINARY = 0x2,
-    WS_OP_CLOSE = 0x8,
-    WS_OP_PING = 0x9,
-    WS_OP_PONG = 0xA,
+    WS_OP_TEXT         = 0x1,
+    WS_OP_BINARY       = 0x2,
+    WS_OP_CLOSE        = 0x8,
+    WS_OP_PING         = 0x9,
+    WS_OP_PONG         = 0xA,
+};
+
+// RFC 6455 §7.4.1
+enum WsCloseCode : u16 {
+    WS_CLOSE_NORMAL          = 1000,
+    WS_CLOSE_GOING_AWAY      = 1001,
+    WS_CLOSE_PROTOCOL_ERROR  = 1002,
+    WS_CLOSE_UNSUPPORTED     = 1003,
+    WS_CLOSE_INVALID_PAYLOAD = 1007,
+    WS_CLOSE_POLICY          = 1008,
+    WS_CLOSE_TOO_BIG         = 1009,
+    WS_CLOSE_INTERNAL_ERROR  = 1011,
+};
+
+/** Outcome of a frame-processing pass, decided by the codec and acted on by Session. */
+enum class WsAction : u8 {
+    Continue,        ///< Keep the connection open, wait for more bytes.
+    CloseAfterFlush  ///< A close frame is queued: send what is buffered, then close.
 };
 
 std::array<u8, SHA_DIGEST_LENGTH> sha1Digest(std::string_view input);
 
 /**
  * @struct WsState
- * @brief Lightweight per-connection WebSocket state embedded inside Session.
+ * @brief Per-connection WebSocket state, embedded inline in Session.
  *
- * Kept as a POD struct so it can live inline in Session's memory without
- * any heap allocation. Only accessed when Session::_mode == WebSocket,
- * so the HTTP fast path never touches it.
+ * Only touched when Session::_mode == WebSocket, so the HTTP fast path never
+ * pays for it. @c fragment stays empty (and therefore allocation-free) unless
+ * a peer actually fragments a message.
  */
 struct WsState {
     const WebSocketRoute* route = nullptr;
+    std::string fragment;     ///< Accumulated payload of an in-progress fragmented message.
+    u8   fragmentOpcode = 0;  ///< Opcode of the first frame of that message.
+    bool fragmenting = false;
     bool closeSent = false;
+    bool closeReceived = false;
 
-    void reset() noexcept {
+    void reset() noexcept
+    {
         route = nullptr;
+        fragment.clear();
+        fragmentOpcode = 0;
+        fragmenting = false;
         closeSent = false;
+        closeReceived = false;
     }
 };
 
 /**
- * @brief Encodes and writes a WebSocket frame into the write buffer.
- * @param writeBuf Destination ring buffer (Session's write buffer).
- * @param opcode   WebSocket opcode (WS_OP_TEXT, WS_OP_BINARY, etc.).
- * @param payload  Frame payload.
- * @param fin      Whether this is the final fragment (true for all non-fragmented frames).
+ * @brief Encodes and appends a WebSocket frame to @p writeBuf.
+ *
+ * Server-to-client frames are never masked (RFC 6455 §5.1).
  */
-void sendFrame(ink::RingBuffer& writeBuf, u8 opcode, std::string_view payload, bool fin = true);
+bool sendFrame(ByteBuffer& writeBuf, u8 opcode, std::string_view payload, bool fin = true);
+
+/** @brief Queues a close frame carrying @p code and an optional @p reason. */
+bool sendClose(ByteBuffer& writeBuf, u16 code, std::string_view reason = {});
 
 /**
- * @brief Drains and processes all complete WebSocket frames from the read buffer.
+ * @brief Consumes every complete frame available in @p readBuf.
  *
- * Dispatches each frame to the appropriate route callback via @p ctx.
- * Returns false when the connection must be closed (invalid frame, close frame received, etc.).
+ * Handles fragmentation, control frames, masking and all the framing-level
+ * protocol rules; message payloads are delivered to the route callbacks
+ * through @p ctx. Any protocol violation queues the appropriate close frame
+ * and returns WsAction::CloseAfterFlush so the peer receives a well-formed
+ * close before the socket goes away.
  *
- * @param state   Per-connection WebSocket state (route pointer, close flag).
- * @param ctx     Context object passed to user callbacks.
- * @param readBuf Source ring buffer containing raw bytes from the network.
- * @param writeBuf Destination ring buffer for outbound frames (pongs, close echoes).
- * @return true to keep the connection alive, false to close it.
+ * @param maxMessageSize Hard cap on a single (possibly reassembled) message.
  */
-bool processFrames(WsState& state, WebSocketContext& ctx,
-                   ink::RingBuffer& readBuf, ink::RingBuffer& writeBuf);
+WsAction processFrames(WsState& state, WebSocketContext& ctx,
+                       ByteBuffer& readBuf, ByteBuffer& writeBuf,
+                       usize maxMessageSize);
 
-}
+} // namespace ws
 
 #endif // WEBSOCKET_H

@@ -1,10 +1,14 @@
 {
   "ip": "0.0.0.0",
   "port": 41385,
-  "max_threads": 12,
+  "max_threads": 0,
   "backlog_size": 8192,
   "connection_timeout_ms": 60000,
-  "max_request_size": 16384,
-  "max_response_size": 16384,
-  "max_body_size": 16384
+  "max_body_size": 65536,
+  "max_request_size": 131072,
+  "max_response_size": 1048576,
+  "read_buffer_size": 4096,
+  "write_buffer_size": 4096,
+  "cpu_affinity": true,
+  "reuseport_cbpf": true
 }
