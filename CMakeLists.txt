@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 
 project(WarpApi
     LANGUAGES CXX
-    VERSION 1.0.0
+    VERSION 0.1.0
 )
 
 # libink requires C++23 (std::expected, std::source_location, stringstream::view)

@@ -1,39 +1,27 @@
-#include "GeneralServices.h"
+#include "Services/GeneralServices.h"
 
 #include "Request/HttpRequest.h"
 #include "Response/HttpResponse.h"
 #include "Server/WebSocketContext.h"
 
-GeneralServices::GeneralServices() {
-    registerAllEndpoints();
-}
-
-void GeneralServices::registerAllEndpoints()
+void configureGeneralRoutes(warp::Router& router)
 {
-    registerEndpoint("/", Method::GET,
-                     [](const HttpRequest&, HttpResponse& response)
-    {
+    router.get("/", [](const HttpRequest&, HttpResponse& response) {
         response.setBody(ink::EnhancedJsonUtils::meta_info().toPrettyString());
     });
 
-    // Cheapest possible route: a constant body, no allocation, no serialisation.
+    // Cheapest possible route: a constant body, no allocation, no serialization.
     // Use this one to measure the framework rather than the JSON library.
-    registerEndpoint("/plaintext", Method::GET,
-                     [](const HttpRequest&, HttpResponse& response)
-    {
+    router.get("/plaintext", [](const HttpRequest&, HttpResponse& response) {
         response.setContentType(TEXT_CONTENT_TYPE);
         response.setBody("Hello, World!");
     });
 
-    registerEndpoint("/json", Method::GET,
-                     [](const HttpRequest&, HttpResponse& response)
-    {
+    router.get("/json", [](const HttpRequest&, HttpResponse& response) {
         response.setBody(R"({"message":"Hello, World!"})");
     });
 
-    registerEndpoint("/test", Method::GET,
-                     [](const HttpRequest& request, HttpResponse& response)
-    {
+    router.get("/test", [](const HttpRequest& request, HttpResponse& response) {
         auto result = ink::EnhancedJson();
 
         for (const auto& [key, value] : request.queryParams())
@@ -52,45 +40,38 @@ void GeneralServices::registerAllEndpoints()
         response.setBody(result.toPrettyString());
     });
 
-    registerEndpoint("/apibenchmark", Method::POST,
-                     [](const HttpRequest& request, HttpResponse& response)
-    {
+    router.post("/apibenchmark", [](const HttpRequest& request, HttpResponse& response) {
         response.setBody(request.body());
     });
 
-    registerEndpoint("/health", Method::GET,
-                     [](const HttpRequest&, HttpResponse& response)
-    {
+    router.get("/health", [](const HttpRequest&, HttpResponse& response) {
         auto obj = ink::EnhancedJson();
         obj["status"] = "ok";
 
         response.setBody(obj.toCompactString());
     });
 
-    registerEndpoint("/version", Method::GET,
-                     [](const HttpRequest&, HttpResponse& response)
-    {
+    router.get("/version", [](const HttpRequest&, HttpResponse& response) {
         auto obj = ink::EnhancedJson();
-        obj["major"] = 1;
-        obj["minor"] = 0;
+        obj["major"] = 0;
+        obj["minor"] = 1;
         obj["patch"] = 0;
-        obj["text"] = "1.0.0";
+        obj["text"] = "0.1.0";
 
         response.setBody(obj.toPrettyString());
     });
 
-    registerWebSocketEndpoint("/ws/echo", {
-        [](WebSocketContext& ctx) {
+    router.webSocket("/ws/echo",
+        /* onOpen    */ [](WebSocketContext& ctx) {
             ctx.sendText("connected");
         },
-        [](WebSocketContext& ctx, std::string_view payload, bool isBinary) {
+        /* onMessage */ [](WebSocketContext& ctx, std::string_view payload, bool isBinary) {
             if (isBinary)
                 ctx.sendBinary(payload);
             else
                 ctx.sendText(payload);
-        },
-        [](WebSocketContext&) {
-            // Nothing to release for an echo route.
         }
-    });
+        // No onClose: nothing to release for an echo route, and it defaults
+        // to empty (see Router::webSocket).
+    );
 }

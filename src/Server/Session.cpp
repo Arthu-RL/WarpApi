@@ -30,6 +30,39 @@ constexpr u32 kMaxHeaderLines = 128;
 
 constexpr std::string_view kNotFoundBody = "{\"error\":\"Endpoint not found.\"}";
 
+/**
+ * @brief Renders an allowedMethods() bitmask as an Allow header value.
+ * @note Writes into caller-owned storage that must outlive the response's
+ *       commit, since the response stores a view rather than copying.
+ */
+std::string_view formatAllow(u32 mask, char* buf, usize cap) noexcept
+{
+    static constexpr std::string_view kNames[] = {
+        "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"
+    };
+
+    usize len = 0;
+    for (u32 m = 0; m < static_cast<u32>(Method::UNKNOWN); ++m)
+    {
+        if ((mask & (1u << m)) == 0)
+            continue;
+
+        const std::string_view name = kNames[m];
+        if (len + name.size() + 2 >= cap)
+            break;
+
+        if (len)
+        {
+            buf[len++] = ',';
+            buf[len++] = ' ';
+        }
+        std::memcpy(buf + len, name.data(), name.size());
+        len += name.size();
+    }
+
+    return std::string_view(buf, len);
+}
+
 } // namespace
 
 #ifdef USE_IOURING
@@ -110,7 +143,7 @@ Session::ParseResult Session::parseRequest()
     if (avail < MIN_REQUEST_SIZE)
         return ParseResult::Incomplete;
 
-    // A request must be fully re-initialised here. Reusing the previous
+    // A request must be fully re-initialized here. Reusing the previous
     // request's header slots across a pipelined batch made request N inherit
     // request N-1's headers, which (among other things) turned a plain GET
     // following a WebSocket handshake into a second upgrade attempt.
@@ -332,11 +365,25 @@ void Session::handleRequest()
     {
         // HEAD must be served by whatever answers GET, minus the payload.
         const Method lookup = headOnly ? Method::GET : _req.method();
-        Endpoint* endpoint = EndpointManager::getInstance()->getEndpoint(lookup, _req.path());
+        const EndpointManager* routes = EndpointManager::getInstance();
+
+        // Passing &_req lets a pattern route capture its `:params` into it.
+        Endpoint* endpoint = routes->getEndpoint(lookup, _req.path(), &_req);
 
         if (endpoint != nullptr)
         {
             endpoint->exec(_req, response);
+        }
+        else if (const u32 allowed = routes->allowedMethods(_req.path()))
+        {
+            // The path exists, just not for this method: 405 with Allow is
+            // required by RFC 9110, and a bare 404 here would send clients
+            // hunting for a routing bug that is really a verb mismatch.
+            char allowBuf[96];
+            response.setStatus(StatusCode::method_not_allowed);
+            response.addHeader(HeaderType::Allow, formatAllow(allowed, allowBuf, sizeof(allowBuf)));
+            response.setContentType(TEXT_CONTENT_TYPE);
+            response.setBody("Method not allowed for this path.");
         }
         else
         {

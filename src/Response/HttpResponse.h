@@ -30,7 +30,7 @@ struct WARP_API HttpResponseData {
     std::string_view version;
 
     /**
-     * @note Deliberately uninitialised and never bulk-cleared. Slots are only
+     * @note Deliberately uninitialized and never bulk-cleared. Slots are only
      *       ever read back through active_headers[0, header_count), every one
      *       of which is written before it is read, so stale contents from the
      *       previous response on this connection are unobservable. Zeroing
@@ -103,7 +103,7 @@ public:
     /** @deprecated kept for source compatibility; begin() supersedes it. */
     void initBody(ByteBuffer* writeBufferPtr) noexcept { _data.body = writeBufferPtr; }
 
-    /** Serialises status line, headers and payload. Safe to call only once. */
+    /** Serializes status line, headers and payload. Safe to call only once. */
     bool setBody(std::string_view body);
 
     /** Emits an empty-bodied response when a handler returned without one. */

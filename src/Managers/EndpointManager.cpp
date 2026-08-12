@@ -26,14 +26,22 @@ void EndpointManager::registerEndpoint(Endpoint* endpoint)
         throw std::runtime_error("Endpoints cannot be registered after the registry is frozen.");
     }
 
-    if (!_endpoints_map[endpoint->getMethod()].insert(endpoint->getRoute(), endpoint))
+    const std::string_view path = endpoint->getRoute();
+    const Method method = endpoint->getMethod();
+
+    // A pattern cannot be hashed, so it goes to the segment matcher; anything
+    // without a ':' segment stays on the O(1) exact path.
+    const bool ok = warp::PatternRoutes<Endpoint*>::isPattern(path)
+                        ? _patterns[method].insert(path, endpoint)
+                        : _endpoints_map[method].insert(path, endpoint);
+
+    if (!ok)
     {
-        const std::string route(endpoint->getRoute());
-        const auto method = static_cast<u32>(endpoint->getMethod());
+        const std::string route(path);
         delete endpoint;
         throw std::runtime_error(
             "Endpoints with equivalent method and path are forbidden. Hint: " +
-            std::to_string(method) + ':' + route);
+            std::to_string(static_cast<u32>(method)) + ':' + route);
     }
 
     _ownedEndpoints.push_back(endpoint);
@@ -72,6 +80,8 @@ u32 EndpointManager::count() const
 {
     usize total = _wsEndpoints.size();
     for (const auto& table : _endpoints_map)
+        total += table.size();
+    for (const auto& table : _patterns)
         total += table.size();
 
     return static_cast<u32>(total);

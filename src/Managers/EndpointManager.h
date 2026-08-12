@@ -6,9 +6,11 @@
 #include <vector>
 
 #include "Endpoint/Endpoint.h"
+#include "Managers/PatternRoutes.h"
 #include "Managers/RouteTable.h"
 
 using EndpointTable = std::array<RouteTable<Endpoint*>, Method::UNKNOWN + 1>;
+using PatternTable = std::array<warp::PatternRoutes<Endpoint*>, Method::UNKNOWN + 1>;
 
 /**
  * @class EndpointManager
@@ -35,12 +37,41 @@ public:
     /** Seals the registry and builds the probe arrays. Call once, at startup. */
     void freeze();
 
-    Endpoint* getEndpoint(Method method, std::string_view route) const noexcept
+    /**
+     * @brief Resolves a route, filling @p req 's path params on a pattern hit.
+     *
+     * Exact routes are probed first and answer in O(1); only a miss falls
+     * through to pattern matching, so adding `:id` routes costs the exact
+     * paths nothing.
+     */
+    Endpoint* getEndpoint(Method method, std::string_view route,
+                          HttpRequest* req = nullptr) const noexcept
     {
         if (static_cast<usize>(method) >= _endpoints_map.size()) [[unlikely]]
             return nullptr;
 
-        return _endpoints_map[method].lookup(route);
+        if (Endpoint* exact = _endpoints_map[method].lookup(route))
+            return exact;
+
+        return _patterns[method].match(route, req);
+    }
+
+    /**
+     * @brief Methods that would match @p route, as a bitmask of (1 << Method).
+     *
+     * Only consulted when a lookup already missed, so the loop over methods
+     * is off the hot path. Lets the caller answer 405 with a correct Allow
+     * header instead of a misleading 404.
+     */
+    u32 allowedMethods(std::string_view route) const noexcept
+    {
+        u32 mask = 0;
+        for (u32 m = 0; m < static_cast<u32>(Method::UNKNOWN); ++m)
+        {
+            if (_endpoints_map[m].lookup(route) || _patterns[m].match(route, nullptr))
+                mask |= (1u << m);
+        }
+        return mask;
     }
 
     WebSocketRoute* getWebSocketEndpoint(std::string_view route) const noexcept
@@ -53,6 +84,7 @@ public:
 
 private:
     EndpointTable _endpoints_map;
+    PatternTable _patterns;
     RouteTable<WebSocketRoute*> _wsEndpoints;
 
     std::vector<Endpoint*> _ownedEndpoints;

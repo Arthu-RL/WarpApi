@@ -75,7 +75,7 @@ private:
      */
     ParseResult parseRequest();
 
-    /** @brief Routes one parsed request through the radix tree and writes the response. */
+    /** @brief Routes one parsed request through EndpointManager and writes the response. */
     void handleRequest();
 
     /** @brief Drains the read buffer, honouring pipelining and write backpressure. */

@@ -32,7 +32,7 @@
  *
  * @note Build once via insert()/freeze(); after that it is read-only and
  *       therefore safe to query concurrently from every worker with no
- *       synchronisation at all.
+ *       synchronization at all.
  */
 template <typename T>
 class RouteTable {

@@ -42,7 +42,7 @@ namespace {
  * epoll batch can be handed straight back out by accept() later in that same
  * batch, so a stale event still sitting in the array would be applied to a
  * brand new connection. Stamping the generation into epoll_event.data lets the
- * loop recognise and drop those leftovers.
+ * loop recognize and drop those leftovers.
  */
 struct SessionSlot {
     Session* session = nullptr;

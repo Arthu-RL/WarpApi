@@ -1,6 +1,10 @@
 #include "WarpDefs.h"
+#include "Core/Router.h"
+#include "Core/ServiceContainer.h"
 #include "Server/HttpServer.h"
 #include "Managers/EndpointManager.h"
+#include "Services/AppServices.h"
+#include "Services/DiagnosticsRoutes.h"
 #include "Services/GeneralServices.h"
 #include "Settings/Settings.h"
 #include <csignal>
@@ -125,14 +129,27 @@ int main(int /*argc*/, char** /*argv*/)
     {
         EndpointManager* endpointManager = EndpointManager::getInstance();
 
-        // Register services/endpoints. Everything must be registered before the
-        // workers start: freeze() seals the registry and builds the lookup
-        // index, and from then on it is read-only — which is precisely what
-        // lets every worker query it without any synchronisation.
-        GeneralServices generalServices;
+        // Constructed in dependency order; add<T>() can only resolve services
+        // added above it (see ServiceContainer.h)
+        warp::ServiceContainer services;
+        services.add<BuildInfo>("WarpApi", "0.1.0");
+        services.add<RequestCounter>();
+
+        // Routes: plain functions taking a Router&, called here in order.
+        // Explicit and ordered — every route in the program is visible from
+        // this one call list, and one that needs a service resolves it from
+        // `services` above (see DiagnosticsRoutes.cpp).
+        warp::Router router(*endpointManager, services);
+        configureGeneralRoutes(router);
+        configureDiagnosticsRoutes(router);
+
+        // Everything must be registered before the workers start: freeze()
+        // builds the lookup index and makes the registry read-only, which is
+        // precisely what lets every worker query it without synchronization.
         endpointManager->freeze();
 
-        INK_INFO << "Registered endpoints: " << endpointManager->count();
+        INK_INFO << "Registered endpoints: " << endpointManager->count()
+                 << " | services: " << services.size();
 
         HttpServer server;
         server.start();

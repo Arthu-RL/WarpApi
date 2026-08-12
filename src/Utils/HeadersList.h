@@ -8,7 +8,7 @@
 #include <string_view>
 
 // Common header values
-#define APP_INFO_HEADER "WarpApi/1.0"
+#define APP_INFO_HEADER "WarpApi/0.1"
 #define KEEP_ALIVE_HEADER "keep-alive"
 #define CLOSE_CONN_HEADER "close"
 #define UPGRADE_HEADER "Upgrade"
@@ -41,6 +41,7 @@
     X(CacheControl,           "Cache-Control")            \
     X(TransferEncoding,       "Transfer-Encoding")        \
     X(Expect,                 "Expect")                   \
+    X(Allow,                  "Allow")                    \
     X(Upgrade,                "Upgrade")                  \
     X(SecWebSocketKey,        "Sec-WebSocket-Key")        \
     X(SecWebSocketVersion,    "Sec-WebSocket-Version")    \

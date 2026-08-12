@@ -26,9 +26,11 @@ the WebSocket codec) — only the I/O multiplexing strategy differs.
   new connections across workers.
 * **Pluggable event loops.** `epoll` (portable) or `io_uring` (max throughput), selected at
   CMake configure time.
-* **Radix-tree routing.** Routes are matched with a compressed trie (`ink::InkixTree`), one per
-  HTTP method, built once at startup and read-only afterward — safe to query concurrently from
-  every worker with no locking.
+* **O(1) exact-match routing, with `:param` patterns as a fallback.** Exact routes are resolved
+  by a frozen, open-addressed hash table (one probe, expected O(1) — not a tree walk); a miss
+  falls through to segment-by-segment pattern matching for `:id`-style routes. Both are built
+  once at startup and read-only afterward — safe to query concurrently from every worker with
+  no locking.
 * **Allocation-free request parsing.** Every header and the body are `string_view`s into the
   connection's read buffer; nothing is copied or heap-allocated to parse a request.
 * **Full WebSocket support (RFC 6455).** Fragmented messages, ping/pong, a proper closing
@@ -53,8 +55,8 @@ the WebSocket codec) — only the I/O multiplexing strategy differs.
   requirement, not a preference).
 * **Build system:** CMake 3.16+.
 * **Dependencies:** OpenSSL (for the WebSocket handshake's SHA-1), `liburing` (only if building
-  the `io_uring` backend), and [`libink`](../libink) (logging, JSON, ring/timer/pool
-  primitives, radix tree).
+  the `io_uring` backend), and [`libink`](../libink) (logging, JSON, timer-wheel and
+  object-pool primitives).
 
 ---
 
@@ -166,7 +168,7 @@ Set `max_threads` to the number of cores you want WarpApi to use (or leave it `0
 them"). Because every worker is fully independent — its own listener, epoll/io_uring instance,
 session pool, and timer wheel — throughput scales close to linearly with core count up to
 however many cores the machine actually has: there is no shared lock or shared data structure
-on the request path to contend on. The `EndpointManager`'s radix trees are the one thing every
+on the request path to contend on. The `EndpointManager`'s route tables are the one thing every
 worker reads, and they are built once at startup and never mutated afterward, so concurrent
 reads from all workers need no synchronization at all.
 
@@ -349,31 +351,153 @@ is for.
 
 ## 🔌 Writing your own endpoints
 
+Every route is declared the same way: a plain function that takes a `Router&`. No class to
+open, no interface to implement, no macro, nothing to instantiate — the function itself is the
+whole unit of composition, and it's called explicitly from `main()` (see `src/main.cpp`), so
+every route in the program is visible from one call list rather than scattered across
+self-registering translation units.
+
+Two types make the whole mechanism: `ServiceContainer` (`src/Core/ServiceContainer.h`) and
+`Router` (`src/Core/Router.h`), and each has exactly the API its callers actually use — no
+factory indirection, no optional-lookup variants, no registry introspection nobody was calling.
+
 ```cpp
-class MyService : public BaseService {
-public:
-    MyService() { registerAllEndpoints(); }
-
-    void registerAllEndpoints() override {
-        registerEndpoint("/hello", Method::GET,
-            [](const HttpRequest& req, HttpResponse& res) {
-                res.setBody("Hello!");
-            });
-
-        registerWebSocketEndpoint("/ws/chat", {
-            /* onOpen    */ [](WebSocketContext& ctx) { ctx.sendText("welcome"); },
-            /* onMessage */ [](WebSocketContext& ctx, std::string_view msg, bool isBinary) {
-                isBinary ? ctx.sendBinary(msg) : ctx.sendText(msg);
-            },
-            /* onClose   */ [](WebSocketContext&) {}
-        });
-    }
-};
+// GreetRoutes.h
+void configureGreetRoutes(warp::Router& router);
 ```
 
-Register your service(s) before calling `server.start()` in `main()` — the route trees are
-built once at startup and are read-only for the lifetime of the process, which is what lets
-every worker thread query them without any locking.
+```cpp
+// GreetRoutes.cpp
+void configureGreetRoutes(warp::Router& router)
+{
+    router.get("/hello", [](const HttpRequest&, HttpResponse& res) {
+        res.setBody("Hello!");
+    });
+
+    router.post("/echo", [](const HttpRequest& req, HttpResponse& res) {
+        res.setBody(req.body());
+    });
+
+    router.webSocket("/ws/chat",
+        /* onOpen    */ [](WebSocketContext& ctx) { ctx.sendText("welcome"); },
+        /* onMessage */ [](WebSocketContext& ctx, std::string_view msg, bool isBinary) {
+            isBinary ? ctx.sendBinary(msg) : ctx.sendText(msg);
+        }
+        // onClose defaults to empty when omitted.
+    );
+}
+```
+
+```cpp
+// main.cpp
+warp::Router router(*EndpointManager::getInstance(), services);
+configureGreetRoutes(router);
+// ...more configureXRoutes(router) calls as the app grows...
+
+EndpointManager::getInstance()->freeze(); // once everything above is registered
+```
+
+### Routes that need services: `ServiceContainer`
+
+```cpp
+// main.cpp
+warp::ServiceContainer services;
+services.add<Database>("postgres://...");
+services.add<UserRepository>(services.get<Database>());   // direct constructor injection:
+                                                            // Database is resolved as a plain
+                                                            // argument, no factory type needed
+
+warp::Router router(*EndpointManager::getInstance(), services);
+configureUserRoutes(router);
+```
+
+```cpp
+// UserRoutes.cpp
+void configureUserRoutes(warp::Router& router)
+{
+    // Resolved ONCE, here, while wiring - not inside the handlers.
+    auto& repo = router.services().get<UserRepository>();
+
+    router.group("/api/v1", [&repo](warp::Router& v1) {
+        v1.group("/users", [&repo](warp::Router& users) {
+            users.get("/",    [&repo](const HttpRequest&, HttpResponse& res) {
+                res.setBody(repo.listJson());
+            });
+            users.post("/",   [&repo](const HttpRequest& req, HttpResponse& res) {
+                res.setBody(repo.create(req.body()));
+            });
+        });
+    });
+}
+```
+
+`services.get<Database>()` in the first snippet is a plain function argument: it fully
+evaluates — throwing immediately if `Database` is missing — before `add<UserRepository>` is
+even entered. That one pattern is dependency injection here; there is no separate "factory"
+registration path, because passing a reference as a constructor argument already says
+everything a factory closure would.
+
+Why it's built this way:
+
+* **Zero per-request cost.** Resolution happens at configure time and the handler captures a
+  reference, so serving a request performs no container lookup at all. Do *not* call
+  `services().get<T>()` inside a handler body — that moves a lookup onto the hot path for no
+  benefit.
+* **No RTTI required.** Release builds use `-fno-rtti`, so `std::type_index` is unavailable.
+  The container keys services on the address of a per-type `static constexpr` member instead,
+  which is a link-time constant, and recovers readable type names from `__PRETTY_FUNCTION__`
+  purely so that a missing dependency can say *which* type is missing.
+* **Dependency cycles are inexpressible.** Services are constructed eagerly, in registration
+  order, and `add<T>()` can only resolve services added before it. There is no lazy
+  initialization to race on and no cycle to detect — misordered wiring fails at startup with
+  a named error instead of deadlocking or half-initializing later.
+* **Structure via `group()`, not inheritance.** Nested prefixes keep a large API's shape in the
+  source without a class hierarchy. The seam is normalized, so `group("/api") + get("/users")`
+  and `group("/api/") + get("users")` both produce `/api/users` rather than a silently
+  unreachable `/api//users`.
+
+> **Services are shared by every worker thread**, and WarpApi's workers never synchronize with
+> one another. Anything in the container must be immutable after startup or internally
+> thread-safe. A service holding a bare `std::vector` that handlers mutate is a data race, not
+> a slow path. See `src/Services/AppServices.h` for the two safe shapes (immutable, and atomic).
+
+### Path parameters
+
+A `:name` segment captures that part of the path:
+
+```cpp
+router.get("/users/:id",            handler);   // request.param("id")
+router.get("/users/:id/posts/:pid", handler);   // request.param("pid")
+```
+
+```cpp
+res.setBody(std::string(request.param("id")));
+```
+
+`param()` returns a `std::string_view` straight into the read buffer — no allocation and no
+decoding, so run it through `Conversions::urlDecode` if the segment can contain percent
+escapes. Up to 8 parameters per route are stored inline in the request.
+
+Matching is layered so patterns cost exact routes nothing: the O(1) hash table is probed
+first and returns immediately on a hit, and only a miss falls through to segment matching. An
+exact route therefore always wins over a pattern that would also match (`/users/me` beats
+`/users/:id`), and a path with the wrong number of segments never matches at all.
+
+### 405 vs 404
+
+A request whose path exists but whose method does not gets `405 Method Not Allowed` with a
+correct `Allow` header, rather than a `404` that would send you hunting for a routing bug that
+is really a verb mismatch. Only genuinely unknown paths return `404`.
+
+```
+$ curl -i -X POST http://127.0.0.1:41385/plaintext
+HTTP/1.1 405 Method Not Allowed
+Allow: GET
+```
+
+Every route — with or without a dependency — must be registered before `EndpointManager::freeze()`
+runs in `main()`. The route index is built once at startup and is read-only for the rest of the
+process's life, which is what lets every worker thread query it without any locking.
 
 ---
 

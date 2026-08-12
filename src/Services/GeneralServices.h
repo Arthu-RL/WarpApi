@@ -3,15 +3,15 @@
 
 #pragma once
 
-#include "BaseService.h"
+#include "Core/Router.h"
 
-class WARP_API GeneralServices : public BaseService
-{
-public:
-    GeneralServices();
-    ~GeneralServices() = default;
-
-    virtual void registerAllEndpoints() override;
-};
+/**
+ * @brief The framework's bundled example/default routes: meta info, a
+ *        plaintext benchmark target, health/version, and a WebSocket echo.
+ *
+ * Registered like any other route group — call it once while wiring the
+ * application, before `EndpointManager::freeze()`. See main.cpp.
+ */
+void configureGeneralRoutes(warp::Router& router);
 
 #endif // GENERALSERVICES_H

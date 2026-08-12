@@ -23,7 +23,7 @@ struct WARP_API RequestData {
     /**
      * Indexed by the HeaderType *ordinal* — never by a bitmask.
      *
-     * @note Deliberately left uninitialised and never bulk-cleared. A slot is
+     * @note Deliberately left uninitialized and never bulk-cleared. A slot is
      *       only ever read after its presence bit has been checked, so stale
      *       contents from a previous request on the same connection are
      *       unobservable. Clearing it cost a 288-byte memset on every single
@@ -166,6 +166,39 @@ public:
         return (_presentHeaders & headerBit(key)) != 0;
     }
 
+    /** Upper bound on `:params` in one route; keeps the storage inline. */
+    static constexpr usize kMaxParams = 8;
+
+    /** @note Called by the router while matching; both views outlive the request. */
+    void setParam(std::string_view name, std::string_view value) noexcept
+    {
+        if (_paramCount < kMaxParams) [[likely]]
+        {
+            _paramNames[_paramCount] = name;
+            _paramValues[_paramCount] = value;
+            ++_paramCount;
+        }
+    }
+
+    /**
+     * @brief Value captured by `:name` in the route pattern, or empty.
+     *
+     * A view straight into the read buffer — no allocation, no decoding.
+     * Percent-escapes are left as-is; run it through Conversions::urlDecode
+     * if the segment can contain them.
+     */
+    std::string_view param(std::string_view name) const noexcept
+    {
+        for (u32 i = 0; i < _paramCount; ++i)
+        {
+            if (_paramNames[i] == name)
+                return _paramValues[i];
+        }
+        return {};
+    }
+
+    u32 paramCount() const noexcept { return _paramCount; }
+
     /**
      * Query parameters are decoded lazily: the map costs several allocations
      * per request, and the vast majority of routes never look at it. The first
@@ -191,6 +224,7 @@ public:
     {
         _data.clear();
         _presentHeaders = 0;
+        _paramCount = 0; // slots are only read below _paramCount, so no clearing needed
         if (!_queryParams.empty())
             _queryParams.clear();
         _queryParsed = false;
@@ -221,6 +255,10 @@ private:
 
     RequestData _data;
     HeaderMask _presentHeaders = 0;
+
+    std::string_view _paramNames[kMaxParams];
+    std::string_view _paramValues[kMaxParams];
+    u32 _paramCount = 0;
 
     mutable std::unordered_map<std::string, std::string> _queryParams;
     mutable bool _queryParsed = false;
