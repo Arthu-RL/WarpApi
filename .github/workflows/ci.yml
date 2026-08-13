@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Linux (${{ matrix.backend }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    container:
+      image: arthurrl/vulkan-dev:lts
+      credentials:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+      # io_uring needs relaxed seccomp for io_uring_setup/enter/register
+      # (blocked by Docker's default profile) plus SYS_NICE/SYS_RESOURCE for
+      # SQPOLL and the RLIMIT_MEMLOCK raise -- see README.md's "io_uring
+      # inside Docker" note. Applied to both matrix legs unconditionally
+      # since neither is meaningful to plain epoll, so there's nothing to
+      # gain from conditioning it on matrix.backend.
+      options: --security-opt seccomp=unconfined --cap-add=SYS_NICE --cap-add=SYS_RESOURCE
+
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [epoll, iouring]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure
+        env:
+          LIBRARY_PATH: /usr/local/linux/release
+        run: |
+          if [ "${{ matrix.backend }}" = "epoll" ]; then
+            cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DUSE_EPOLL=ON -DUSE_IOURING=OFF
+          else
+            cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DUSE_EPOLL=OFF -DUSE_IOURING=ON
+          fi
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Smoke test
+        # There's no bundled test binary (see README.md's Testing section),
+        # so this is CI's actual correctness signal: the binary starts,
+        # binds, and answers a real request -- on both backends, now that the
+        # container above has the privileges io_uring needs to run, not just
+        # compile. config.json is copied next to the executable by
+        # CMakeLists.txt's copy_app_configs target, and main.cpp reads it
+        # from the working directory, so this has to run from build/.
+        #
+        # The startup log's "ring mode" line (io_uring only) is printed for
+        # visibility but not asserted on: WarpApi's own setup ladder falling
+        # back to a lesser ring mode is documented, correct behavior in a
+        # constrained environment, not a failure -- the health check below is
+        # the actual pass/fail signal.
+        run: |
+          cd build
+          ./WarpApi > server.log 2>&1 &
+          for i in $(seq 1 20); do
+            curl -sf http://127.0.0.1:41385/health > /dev/null && break
+            sleep 0.5
+          done
+          curl -sf http://127.0.0.1:41385/health
+          echo
+          grep "ring mode" server.log || true
+          pkill -x WarpApi

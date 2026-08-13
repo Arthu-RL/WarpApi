@@ -1,0 +1,145 @@
+name: Release
+
+# Triggered by pushing a version tag, e.g.:
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# Builds both backend variants (epoll, io_uring) for Linux x86_64 and attaches
+# one archive per variant to a GitHub Release -- these are two different
+# binaries built from the same source with different CMake flags (see
+# CMakeLists.txt's USE_EPOLL/USE_IOURING), not two platforms, so both are
+# built here even though this project targets Linux only.
+#
+# Note the asymmetry in what "supported" means for each: epoll runs anywhere
+# with no special privileges; io_uring needs a kernel that has it (5.1+,
+# SQPOLL/newer setup flags need newer still) and, inside a container, extra
+# capabilities to actually use the io_uring_* syscalls (see README.md's
+# "io_uring inside Docker" note) -- this workflow builds and ships it, it
+# does not (and cannot, in a default GitHub-hosted container) runtime-verify
+# it the way ci.yml's smoke test does for epoll.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  contents: write
+
+jobs:
+  create-release:
+    name: Create draft release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract CHANGELOG section
+        # Pulls the "## [X.Y.Z]" ... section up to the next "## [" heading
+        # (or EOF) out of CHANGELOG.md, keyed off the pushed tag (v0.1.0 ->
+        # 0.1.0).
+        run: |
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#v}"
+
+          awk -v ver="$VERSION" '
+            /^## \[/ {
+              if (found) exit
+              if ($0 ~ ("\\[" ver "\\]")) { found=1; next }
+              next
+            }
+            found { print }
+          ' CHANGELOG.md > release_notes.md
+
+          if [[ ! -s release_notes.md ]]; then
+            echo "❌  No CHANGELOG.md section found for version $VERSION" >&2
+            exit 1
+          fi
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "${{ github.ref_name }}" \
+            --notes-file release_notes.md \
+            --draft
+
+  linux-release:
+    name: Package Linux (${{ matrix.backend }})
+    needs: create-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    container:
+      image: arthurrl/vulkan-dev:lts
+      credentials:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    strategy:
+      matrix:
+        backend: [epoll, iouring]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure
+        # WARP_NATIVE_ARCH=OFF: the default -march=native (see CMakeLists.txt)
+        # tunes for *this runner's* CPU. A binary that leaves this machine
+        # must not carry that baked in, or it can SIGILL on a different CPU.
+        env:
+          LIBRARY_PATH: /usr/local/linux/release
+        run: |
+          if [ "${{ matrix.backend }}" = "epoll" ]; then
+            FLAGS="-DUSE_EPOLL=ON -DUSE_IOURING=OFF"
+          else
+            FLAGS="-DUSE_EPOLL=OFF -DUSE_IOURING=ON"
+          fi
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DWARP_NATIVE_ARCH=OFF \
+            $FLAGS
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Stage
+        # cmake --install only places the binary (see CMakeLists.txt's
+        # install() rule). config.json is read from the working directory at
+        # startup rather than embedded, so it has to ship alongside the
+        # binary, not just live in the build tree.
+        run: |
+          STAGE="stage/warpapi-linux-x86_64-${{ matrix.backend }}"
+          cmake --install build --prefix "$STAGE"
+          cp config.json README.md LICENSE CHANGELOG.md "$STAGE/"
+
+      - name: Package
+        run: |
+          tar -C stage -czf \
+            "warpapi-${{ github.ref_name }}-linux-x86_64-${{ matrix.backend }}.tar.gz" \
+            "warpapi-linux-x86_64-${{ matrix.backend }}"
+
+      - name: Upload asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.ref_name }}" \
+            "warpapi-${{ github.ref_name }}-linux-x86_64-${{ matrix.backend }}.tar.gz" \
+            --repo "${{ github.repository }}"
+
+  publish-release:
+    name: Publish release
+    needs: linux-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release edit "${{ github.ref_name }}" --draft=false \
+            --repo "${{ github.repository }}"
